@@ -1,0 +1,40 @@
+{
+  "name": "panelshow",
+  "version": "0.1.0",
+  "description": "Host your own AI panel show: invite GMI Cloud models into one group chat, let them argue, read your code, and judge each other blind.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jyc323/panelshow.git"
+  },
+  "keywords": [
+    "llm",
+    "multi-agent",
+    "ai-chat",
+    "llm-as-judge",
+    "code-review",
+    "gmi-cloud",
+    "debate",
+    "local-first"
+  ],
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "demo": "node scripts/demo.js",
+    "test": "node --test test/app.test.js"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "dompurify": "^3.2.0",
+    "htm": "^3.1.1",
+    "linkedom": "^0.18.0",
+    "mammoth": "^1.8.0",
+    "marked": "^15.0.0",
+    "preact": "^10.25.0",
+    "unpdf": "^1.0.0"
+  }
+}
