@@ -9,7 +9,7 @@ English · [简体中文](README.zh-CN.md)
 
 [![test](https://github.com/Jyc323/panelshow/actions/workflows/test.yml/badge.svg)](https://github.com/Jyc323/panelshow/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Node 20.6+](https://img.shields.io/badge/node-%E2%89%A520.6-339933)
+![Node 22+](https://img.shields.io/badge/node-%E2%89%A522-339933)
 ![No build step](https://img.shields.io/badge/build%20step-none-lightgrey)
 [![Powered by GMI Cloud](https://img.shields.io/badge/powered%20by-GMI%20Cloud-2563eb)](https://console.gmicloud.ai/ref/ZPU349MK)
 

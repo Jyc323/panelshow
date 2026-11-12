@@ -335,6 +335,10 @@ export function createServer() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (Number(process.versions.node.split('.')[0]) < 22) {
+    console.error(`PanelShow needs Node.js 22 or newer (this is ${process.version}). PDF reading does not work on older versions.`);
+    process.exit(1);
+  }
   createServer().listen(config.port, config.host, () => {
     console.log(`PanelShow is running at http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`);
     if (!config.apiKey) console.log('GMI_API_KEY is not set: copy .env.example to .env and add your key, then restart.');
