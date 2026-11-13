@@ -184,3 +184,11 @@ Built on [GMI Cloud](https://www.gmicloud.ai/), with all models called through o
 [MIT](LICENSE)
 
 <div align="center"><sub>If PanelShow is useful to you, a ⭐ helps more people find it.</sub></div>
+
+## Let's connect
+
+If PanelShow is useful to you, or you have ideas for it, I'd love to hear from you.
+- X: [@jiayuliiop8](https://x.com/jiayuliiop8)
+- LinkedIn: [Jiayu Danielle Li](https://www.linkedin.com/in/jiayu-danielle-li-158102188/)
+
+Issues and pull requests are welcome too.
