@@ -54,7 +54,9 @@ function parts(text) {
   return out;
 }
 
-const shortModel = (id) => String(id || '').split('/').pop();
+const isLocal = (id) => String(id || '').startsWith('ollama:');
+// "ollama:qwen3:8b" -> "qwen3:8b"; "Qwen/Qwen3.8-Max" -> "Qwen3.8-Max"
+const shortModel = (id) => String(id || '').replace(/^ollama:/, '').split('/').pop();
 const hostOf = (u) => {
   try {
     return new URL(u).hostname.replace(/^www\./, '');
@@ -269,13 +271,13 @@ function SmartInvite({ room, onClose, onError }) {
   };
   const usedVendors = (i) => new Set([...rows.filter((r, k) => k !== i && r.on).map((r) => r.vendor)]);
   return html`
-    <p class="muted">Describe what the room will discuss. A planning model picks ${count} models that fit, at most one per vendor, and suggests a name and role for each. Nothing is added until you click Invite.</p>
+    <p class="muted">Describe what the room will discuss. A planning model picks ${count} models that fit, at most one per vendor (each local model family counts as one), and suggests a name and role for each. Nothing is added until you click Invite.</p>
     <textarea rows="3" placeholder="e.g. Review my YouTube thumbnail ideas for a video about GPU cloud pricing" value=${topic} onInput=${(e) => setTopic(e.target.value)} autofocus></textarea>
     <div class="row">
       <label class="inline">How many
         <select onChange=${(e) => setCount(Number(e.target.value))}>${[3, 4, 5, 6].filter((n) => n <= seatsLeft).map((n) => html`<option value=${n} selected=${n === count}>${n}</option>`)}</select>
       </label>
-      <span class="muted grow">${busy && !result ? 'Testing new models and asking the planner… this can take a minute.' : cost ? `Costs about ${cost.planning} planning request${cost.probes ? ` + ${cost.probes} tiny test call${cost.probes === 1 ? '' : 's'}` : ''}.` : ''}</span>
+      <span class="muted grow">${busy && !result ? 'Testing new models and asking the planner… this can take a minute.' : cost ? (cost.planning || cost.probes ? `Costs about ${cost.planning} planning request${cost.probes ? ` + ${cost.probes} tiny test call${cost.probes === 1 ? '' : 's'}` : ''}.` : 'No paid requests: only local models, picked by simple rules.') : ''}</span>
       <button class="primary" disabled=${!topic.trim() || busy || seatsLeft <= 0} onClick=${suggest}>${result ? 'Suggest again' : 'Suggest'}</button>
     </div>
     ${seatsLeft <= 0 ? html`<div class="error">This room is full (8 members).</div>` : ''}
@@ -287,10 +289,10 @@ function SmartInvite({ room, onClose, onError }) {
           <input type="checkbox" checked=${r.on} onChange=${(e) => edit(i, { on: e.target.checked })} aria-label="Include" />
           <input class="name" value=${r.name} maxlength="24" onInput=${(e) => edit(i, { name: e.target.value })} aria-label="Name" />
           <input class="rolename" value=${r.roleName || ''} maxlength="40" placeholder="Role" onInput=${(e) => edit(i, { roleName: e.target.value })} aria-label="Role name" />
-          <span class="muted grow mono">${r.model}</span>
+          <span class="muted grow mono">${shortModel(r.model)}${isLocal(r.model) ? ' · local' : ''}</span>
           ${result.alternatives.some((a) => !usedVendors(i).has(a.vendor)) ? html`<select class="swap" onChange=${(e) => swap(i, e.target.value)}>
             <option value="" selected>Swap…</option>
-            ${result.alternatives.filter((a) => !usedVendors(i).has(a.vendor)).map((a) => html`<option value=${a.model}>${a.model}</option>`)}
+            ${result.alternatives.filter((a) => !usedVendors(i).has(a.vendor)).map((a) => html`<option value=${a.model}>${shortModel(a.model)}${isLocal(a.model) ? ' (local)' : ''}</option>`)}
           </select>` : ''}
         </div>
         <div class="badges"><span class="badge">${r.vendor}</span>${tagBadges(r).map((b) => html`<span class="badge">${b}</span>`)}</div>
@@ -329,6 +331,7 @@ function PickModels({ room, caps, onClose, onError }) {
     setPicked([...picked, { model: id, name: autoName(id, taken) }]);
   };
   const shown = (models || []).filter((m) => m.id.toLowerCase().includes(q.toLowerCase()));
+  const groups = [['GMI Cloud', shown.filter((m) => !isLocal(m.id))], ['Local (Ollama) · free, runs on your machine', shown.filter((m) => isLocal(m.id))]].filter(([, list]) => list.length);
   const invite = async () => {
     setBusy(true);
     try {
@@ -342,20 +345,22 @@ function PickModels({ room, caps, onClose, onError }) {
   return html`
     <div class="row">
       <input class="grow" placeholder="Search models…" value=${q} onInput=${(e) => setQ(e.target.value)} />
-      <button class="ghost" onClick=${() => load(true)} title="Ask GMI for the list again">Refresh</button>
+      <button class="ghost" onClick=${() => load(true)} title="Ask GMI and Ollama for the list again">Refresh</button>
     </div>
     <div class="modellist">
       ${models === null && !loadError ? html`<div class="muted pad">Loading the model list…</div>` : ''}
       ${loadError ? html`<div class="error">${loadError}</div>` : ''}
-      ${models && !models.length && !loadError ? html`<div class="muted pad">GMI returned no models.</div>` : ''}
-      ${shown.map((m) => {
-        const c = caps[m.id];
-        const on = picked.some((p) => p.model === m.id);
-        return html`<button class=${'model' + (on ? ' on' : '')} onClick=${() => toggle(m.id)}>
-          <span>${on ? '✓ ' : ''}${m.id}</span>
-          ${c ? html`<span class=${'badge' + (c.ok === false ? ' bad' : '')}>${c.ok === false ? 'failed a test call' : c.vision ? 'sees images' : 'text only'}</span>` : ''}
-        </button>`;
-      })}
+      ${models && !models.length && !loadError ? html`<div class="muted pad">No models found. Add a GMI key to .env, or start Ollama and pull a model (ollama pull qwen3:8b).</div>` : ''}
+      ${groups.map(([label, list]) => html`
+        ${groups.length > 1 || isLocal(list[0].id) ? html`<div class="groupname">${label}</div>` : ''}
+        ${list.map((m) => {
+          const c = caps[m.id];
+          const on = picked.some((p) => p.model === m.id);
+          return html`<button class=${'model' + (on ? ' on' : '')} onClick=${() => toggle(m.id)}>
+            <span>${on ? '✓ ' : ''}${isLocal(m.id) ? shortModel(m.id) : m.id}</span>
+            ${c ? html`<span class=${'badge' + (c.ok === false ? ' bad' : '')}>${c.ok === false ? (c.local ? 'not a chat model' : 'failed a test call') : c.vision ? 'sees images' : 'text only'}</span>` : ''}
+          </button>`;
+        })}`)}
     </div>
     ${picked.length ? html`<div class="picked">
       ${picked.map((p, i) => html`<div class="row tight">
@@ -373,7 +378,7 @@ function PickModels({ room, caps, onClose, onError }) {
     </label>
     <textarea rows="2" placeholder="Optional: describe the job in the room" value=${role} onInput=${(e) => setRole(e.target.value)}></textarea>
     <div class="row end">
-      <span class="muted grow">Click several models to invite them together. New models get two tiny test calls.</span>
+      <span class="muted grow">Click several models to invite them together. New GMI models get two tiny test calls; local models are checked for free.</span>
       <button class="primary" disabled=${!picked.length || picked.some((p) => !p.name) || busy} onClick=${invite}>Invite${picked.length > 1 ? ` ${picked.length}` : ''}</button>
     </div>
   `;
@@ -668,7 +673,9 @@ function App() {
     }
   };
 
-  const noKey = health && !health.hasKey;
+  const ollama = health && health.providers ? health.providers.ollama : null;
+  const noKey = health && !health.hasKey && !(ollama && ollama.reachable);
+  const missingGmi = room && health && !health.hasKey && room.members.some((m) => !isLocal(m.model));
   return html`<div class="layout">
     <aside class="side">
       <div class="brand">PanelShow</div>
@@ -678,21 +685,22 @@ function App() {
         ${!rooms.length ? html`<div class="muted pad">No rooms yet.</div>` : ''}
       </nav>
       <div class="sidefoot muted">
-        ${health ? html`<div>API: ${hostOf(health.baseUrl)}</div><div>${health.ffmpeg ? 'ffmpeg found: images and video frames are prepared' : 'ffmpeg not found: video frames are skipped'}</div>` : ''}
+        ${health ? html`<div>API: ${health.hasKey ? hostOf(health.baseUrl) : 'GMI Cloud off (no key)'}</div>${ollama && ollama.enabled ? html`<div>Ollama: ${ollama.reachable ? `${ollama.models} local model${ollama.models === 1 ? '' : 's'}` : 'not running'}</div>` : ''}<div>${health.ffmpeg ? 'ffmpeg found: images and video frames are prepared' : 'ffmpeg not found: video frames are skipped'}</div>` : ''}
       </div>
     </aside>
 
     <main class="main">
-      ${noKey ? html`<div class="banner">No GMI key found. Copy <code>.env.example</code> to <code>.env</code>, put your key after <code>GMI_API_KEY=</code>, and restart the server.</div>` : ''}
+      ${noKey ? html`<div class="banner">No models are set up. For GMI Cloud, copy <code>.env.example</code> to <code>.env</code>, put your key after <code>GMI_API_KEY=</code>, and restart the server. For local models, start Ollama and pull a model (<code>ollama pull qwen3:8b</code>).</div>` : ''}
+      ${!noKey && missingGmi ? html`<div class="banner">This room has GMI Cloud members, but no GMI key is set. Add <code>GMI_API_KEY</code> to <code>.env</code> and restart, or remove those members.</div>` : ''}
       ${!room
-        ? html`<div class="empty"><h1>PanelShow</h1><p>Host your own AI panel: invite GMI models, let them argue, read links and files, and judge each other.</p><button class="primary" onClick=${newRoom}>+ New room</button></div>`
+        ? html`<div class="empty"><h1>PanelShow</h1><p>Host your own AI panel: invite GMI Cloud or local models, let them argue, read links and files, and judge each other.</p><button class="primary" onClick=${newRoom}>+ New room</button></div>`
         : html`
             <header class="top">
               <input class="title" value=${room.title} onChange=${(e) => api('PATCH', `/api/rooms/${room.id}`, { title: e.target.value }).then(loadRooms, (er) => fail(er.message))} aria-label="Room title" />
               <div class="members">
                 ${room.members.map(
                   (m) => html`<button class="member" onClick=${() => setDialog({ type: 'member', id: m.id })} title=${`${m.model}${m.role ? `\nRole: ${m.role}` : ''}\nClick to edit`}>
-                    <span class="dot" style=${`background:${m.color}`}></span>${m.name}${roleLabel(m) ? html`<span class="role" title=${m.role}>${roleLabel(m)}</span>` : ''}<span class="muted">${shortModel(m.model)}</span>${canSee(m, caps) ? html`<span title="Gets images">👁</span>` : ''}${caps[m.model] && caps[m.model].ok === false ? html`<span title=${caps[m.model].error}>⚠️</span>` : ''}
+                    <span class="dot" style=${`background:${m.color}`}></span>${m.name}${roleLabel(m) ? html`<span class="role" title=${m.role}>${roleLabel(m)}</span>` : ''}<span class="muted">${shortModel(m.model)}</span>${isLocal(m.model) ? html`<span class="local" title="Runs on your machine through Ollama">local</span>` : ''}${canSee(m, caps) ? html`<span title="Gets images">👁</span>` : ''}${caps[m.model] && caps[m.model].ok === false ? html`<span title=${caps[m.model].error}>⚠️</span>` : ''}
                   </button>`
                 )}
                 <button class="ghost" onClick=${() => setDialog({ type: 'invite' })}>+ Invite</button>
@@ -738,7 +746,7 @@ function App() {
                 </select>
                 ${mode === 'roundtable' ? html`<label class="inline">rounds <input type="number" min="1" max="5" value=${rounds} onInput=${(e) => setRounds(Math.min(5, Math.max(1, Number(e.target.value) || 1)))} /></label>` : ''}
                 ${mode === 'relay' ? html`<label class="inline">max turns <input type="number" min="1" max="12" value=${hops} onInput=${(e) => setHops(Math.min(12, Math.max(1, Number(e.target.value) || 1)))} /></label>` : ''}
-                <span class="grow muted right">${room.members.length ? `${mode === 'relay' && !targets.broadcast ? 'up to ' : ''}${requests} request${requests === 1 ? '' : 's'}${mode === 'roundtable' && rounds > 1 ? ' at most' : ''}` : ''}</span>
+                <span class="grow muted right">${room.members.length ? `${mode === 'relay' && !targets.broadcast ? 'up to ' : ''}${requests} request${requests === 1 ? '' : 's'}${mode === 'roundtable' && rounds > 1 ? ' at most' : ''}${room.members.some((m) => isLocal(m.model)) ? (room.members.every((m) => isLocal(m.model)) ? ' · all local, free' : ' · local ones are free') : ''}` : ''}</span>
                 ${running ? html`<button class="danger" onClick=${() => api('POST', `/api/rooms/${roomId}/stop`)}>Stop</button>` : html`<button class="primary" disabled=${!text.trim() || !room.members.length} onClick=${sendMessage}>Send</button>`}
               </div>
             </footer>

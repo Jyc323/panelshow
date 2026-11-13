@@ -200,3 +200,7 @@ label.inline input { width: 58px; margin: 0; }
 .fileitem.sub { flex-direction: row; justify-content: space-between; gap: 8px; padding: 2px 8px; margin-bottom: 2px; font-size: 12px; border-color: transparent; }
 .fileitem.sub:hover { border-color: var(--line); }
 .fileitem.sub .muted { flex: none; }
+
+/* local (Ollama) models */
+.member .local { font-size: 11px; padding: 0 6px; border-radius: 8px; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+.modellist .groupname { font-size: 12px; font-weight: 600; color: #6b7280; padding: 8px 10px 4px; text-transform: none; }

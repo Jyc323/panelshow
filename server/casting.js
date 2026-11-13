@@ -4,7 +4,7 @@
 // 3. A well-known "casting director" model picks from the shortlist and writes names, roles and reasons.
 // 4. The server checks the result (one model per vendor, ids from the shortlist only) and fills gaps by rules.
 import { config } from './config.js';
-import { chat, listModels, probeModel } from './gmi.js';
+import { chat, listModels, probeModel, isLocal, localName } from './llm.js';
 import { getCapabilities, setCapability } from './store.js';
 
 export const PROBE_VERSION = 2; // version 2: the image test checks that the model really saw the picture
@@ -41,6 +41,7 @@ const num = (s) => {
 
 /** What we can tell about a model from its id alone. */
 export function describeModel(id) {
+  if (isLocal(id)) return describeLocal(id);
   const raw = String(id);
   const slash = raw.indexOf('/');
   const owner = slash > 0 ? raw.slice(0, slash) : '';
@@ -72,9 +73,33 @@ export function describeModel(id) {
   return { id: raw, vendor, family, version: num(family.replace(/^[A-Za-z]+[-_]?(?=[A-Za-z])/, '')), size, tags, exclude };
 }
 
+/**
+ * A local Ollama model such as `ollama:qwen3:8b`. Local models are usually small, so there is no size
+ * cut. Each local model family counts as its own "vendor": one qwen3 and one llama3 can both sit at the
+ * table, and a local Qwen does not compete with Qwen on GMI Cloud.
+ */
+function describeLocal(id) {
+  const raw = String(id);
+  const name = localName(raw);
+  const [base, tag = ''] = name.split(':');
+  const stem = base.split('/').pop();
+  const family = stem.replace(/[-_](instruct|chat|it)$/i, '');
+  const sizeMatch = `${stem}:${tag}`.match(/(?<![A-Za-z\d])(\d+(?:\.\d+)?)[bB](?![A-Za-z])/);
+  const size = sizeMatch ? parseFloat(sizeMatch[1]) : 0;
+  const maker = (NAME_VENDORS.find(([re]) => re.test(stem)) || [, ''])[1];
+  const tags = {
+    reasoning: /thinking|(^|[-_])r1([-_]|$)|reason|qwq|[-_]think/i.test(stem),
+    fast: size > 0 ? size <= 8 : /mini|nano|small|tiny/i.test(stem),
+    flagship: size >= 30,
+    code: /coder|codex|code/i.test(stem),
+  };
+  const exclude = NOT_CHAT.test(stem) ? 'not a chat model' : '';
+  return { id: raw, vendor: `Local ${family}`, maker, local: true, family, version: num(family.replace(/^[A-Za-z]+[-_]?(?=[A-Za-z])/, '')) + size / 1000, size, tags, exclude };
+}
+
 /** Higher is a better default pick within a vendor. */
 function score(d, cap) {
-  let s = d.version * 10;
+  let s = d.version * 10 + (d.local ? Math.min(d.size, 80) / 4 : 0);
   if (d.tags.flagship) s += 8;
   if (d.tags.code) s -= 6; // coders are good, but a round table wants generalists first
   if (d.tags.fast) s -= 2;
@@ -138,8 +163,8 @@ const DIRECTOR_PREFS = [
 export function chooseDirector(models, caps) {
   const ids = new Set(models.map((m) => m.id));
   const override = config.directorModel;
-  if (override && ids.has(override) && !(caps[override] && caps[override].ok === false)) return override;
-  const all = models.map((m) => describeModel(m.id)).filter((d) => !d.exclude && !(caps[d.id] && caps[d.id].ok === false));
+  if (override && ids.has(override) && !isLocal(override) && !(caps[override] && caps[override].ok === false)) return override;
+  const all = models.filter((m) => !isLocal(m.id)).map((m) => describeModel(m.id)).filter((d) => !d.exclude && !(caps[d.id] && caps[d.id].ok === false));
   for (const pref of DIRECTOR_PREFS) {
     const hits = all.filter(pref).sort((a, b) => b.version - a.version || Number(probedOk(caps[b.id])) - Number(probedOk(caps[a.id])));
     if (hits.length) return hits[0].id;
@@ -282,7 +307,9 @@ export async function planCost(room) {
   const director = chooseDirector(models, caps);
   const toProbe = new Set(shortlist.filter((d) => needsProbe(caps[d.id])).map((d) => d.id));
   if (director && needsProbe(caps[director])) toProbe.add(director);
-  return { probes: toProbe.size, planning: shortlist.length ? 1 : 0, director, candidates: shortlist.length };
+  // Local models are checked by asking Ollama about them, which costs nothing.
+  const paid = [...toProbe].filter((id) => !isLocal(id)).length;
+  return { probes: paid, localChecks: toProbe.size - paid, planning: shortlist.length && director ? 1 : 0, director, candidates: shortlist.length };
 }
 
 /**
@@ -309,7 +336,7 @@ export async function suggestMembers(room, { topic, count = 6, signal } = {}) {
   let picks = [];
   let note = '';
   if (!shortlist.length) note = 'No callable models were found for this room.';
-  else if (!director) note = 'No planning model answered, so the picks below come from simple rules.';
+  else if (!director) note = models.some((m) => !isLocal(m.id)) ? 'No planning model answered, so the picks below come from simple rules.' : 'Only local models are available, so the picks below come from simple rules (no planning request).';
   else {
     const messages = directorPrompt({ topic, room, shortlist, seats, needVision, caps });
     for (let attempt = 0; attempt < 2 && !picks.length; attempt++) {

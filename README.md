@@ -3,7 +3,7 @@
 # PanelShow
 
 **Host your own AI panel show.**<br>
-Put several AI models into one discussion. They question each other, choose who speaks next, and review each other's answers anonymously. Models are served by GMI Cloud.
+Put several AI models into one discussion. They question each other, choose who speaks next, and review each other's answers anonymously. Models come from GMI Cloud, or run on your own machine with Ollama.
 
 English · [简体中文](README.zh-CN.md)
 
@@ -38,6 +38,18 @@ npm start               # then open http://127.0.0.1:8790
 Without an API key, run `npm run demo` to try the full flow. It uses scripted stand-in models, makes no API calls and costs nothing.
 
 One GMI Cloud API key gives access to every chat model on the platform ([get one here](https://console.gmicloud.ai/ref/ZPU349MK), referral link).
+
+### Local models (Ollama)
+
+PanelShow also works with models that run on your own machine through [Ollama](https://ollama.com), with or without a GMI key. Start Ollama and pull a model or two, then start PanelShow:
+
+```bash
+ollama pull qwen3:8b
+ollama pull gemma3:4b
+npm start
+```
+
+PanelShow looks for Ollama at `http://127.0.0.1:11434`. Local models appear in a separate group in the invite list, and a room can mix them with GMI Cloud models.
 
 ## Example: one full discussion
 
@@ -107,6 +119,10 @@ PanelShow never writes to a shared folder. The following are never shown to mode
 - You can attach text, PDF or Word files to a message.
 - Members can write reports, code and data into a shared file area, and request more material with `@@read filename` or `@@open url`.
 
+### Cloud and local models in one room
+
+Members can be GMI Cloud models, local Ollama models, or a mix. Local models are called through Ollama's native API with an explicit context window (`num_ctx`, 16K by default), because Ollama's default window is small enough to cut PanelShow's prompts without an error. Local members run one at a time, so several local models do not compete for memory; in parallel mode they still answer without seeing each other. Smart invite treats each local model family as its own vendor and skips the size limit that applies to cloud models. Without a GMI key, it picks local models by simple rules and sends no planning request.
+
 ### Runs locally, few dependencies
 
 PanelShow is one Node server listening on `127.0.0.1` plus one web page. It uses no frontend framework, no build tool and no database; rooms are stored as JSON files. The API key stays in `.env` and is never sent to the browser. Any room can be exported as Markdown.
@@ -137,10 +153,13 @@ Only the API key is required. Everything else is optional and goes in `.env` (se
 | `PANELSHOW_AUTO_PROBE` | `1` | `0` skips the two small checks for newly invited models |
 | `PANELSHOW_ALLOW_PRIVATE_URLS` | `0` | `1` lets members open localhost and LAN addresses |
 | `PANELSHOW_DATA_DIR` | `./data` | Directory where room data is stored |
+| `PANELSHOW_OLLAMA_URL` | `http://127.0.0.1:11434` | Address of the Ollama server; `off` disables local models |
+| `PANELSHOW_OLLAMA_NUM_CTX` | `16384` | Context window per local request (prompt and reply); larger values need more memory |
+| `PANELSHOW_OLLAMA_CONCURRENCY` | `1` | How many local requests run at the same time |
 
 ## Cost
 
-Each reply is one billed request. Before you send a message, the composer shows how many requests it will trigger. The session in the GIF used 13 requests (8 replies and 5 judges), plus 1 planning request for Smart invite. The first time Smart invite uses a model, it also sends two very small test requests; the results are cached and not repeated.
+Each reply is one billed request. Before you send a message, the composer shows how many requests it will trigger. The session in the GIF used 13 requests (8 replies and 5 judges), plus 1 planning request for Smart invite. The first time Smart invite uses a model, it also sends two very small test requests; the results are cached and not repeated. Local models through Ollama cost nothing per request, and are checked by asking Ollama about the model instead of sending test requests.
 
 ## Security and privacy
 
@@ -150,12 +169,13 @@ Each reply is one billed request. Before you send a message, the composer shows 
 - Shared folders are read-only. Only files in the scan list can be read; reads do not follow symbolic links and confirm that the opened file is the one the scan found; a folder that is moved or replaced stops being shared. Hard-linked files and files or directories with secret-like names are skipped, and dependencies, binaries and anything excluded by ignore rules are not shared. Credential-like values are redacted, in uploaded files too. Note that what members read is still sent to the model provider, so share only code you are allowed to send.
 - Text from web pages and files is given to members as reference material, explicitly marked as not being instructions. This reduces the risk of page content steering a model, but cannot rule it out.
 - Files written by members are shown as plain text and never run as web pages.
+- Requests to local models go only to the Ollama address set in `.env`; the browser cannot change it. When every member is local, what members read is sent only to that Ollama server.
 
 See [SECURITY.md](SECURITY.md) for the scope of these protections and how to report a security issue.
 
 ## Roadmap
 
-- [ ] Other OpenAI-compatible providers, such as OpenRouter, Ollama and LM Studio (GMI Cloud only for now)
+- [ ] Other OpenAI-compatible providers, such as OpenRouter and LM Studio (GMI Cloud and Ollama for now)
 - [ ] Built-in discussion presets, such as Council, Critique and Debate
 - [ ] Costs shown in US dollars, with a budget cap per room
 - [ ] Images and 3D models as attachments
@@ -169,15 +189,24 @@ Full roadmap: [TODO.md](TODO.md). Issues and pull requests are welcome.
 ## Development
 
 ```bash
-npm test     # 29 end-to-end tests against a stand-in model server: no API key, no network
+npm test     # 37 end-to-end tests against stand-in GMI and Ollama servers: no API key, no network
 npm run demo # run the full app with stand-in models
 ```
 
-`server/` is the Node server: `orchestrator.js` schedules turns, `casting.js` handles Smart invite, `judge.js` runs the blind judge, and `workspace.js` manages read-only project folders. `web/` is the frontend page, built with Preact + htm and no build step.
+`server/` is the Node server: `llm.js` routes each model call to GMI Cloud (`gmi.js`) or Ollama (`ollama.js`), `orchestrator.js` schedules turns, `casting.js` handles Smart invite, `judge.js` runs the blind judge, and `workspace.js` manages read-only project folders. `web/` is the frontend page, built with Preact + htm and no build step.
 
 ## Credits
 
 Built on [GMI Cloud](https://www.gmicloud.ai/), with all models called through one OpenAI-compatible API. Get an API key in the [GMI Cloud console](https://console.gmicloud.ai/ref/ZPU349MK) (referral link).
+
+## Let's connect
+
+Questions, ideas, or want to share how you use PanelShow? I'd love to hear from you:
+
+- X: [@jiayuliiop8](https://x.com/jiayuliiop8)
+- LinkedIn: [Jiayu Danielle Li](https://www.linkedin.com/in/jiayu-danielle-li-158102188/)
+
+Issues and pull requests are welcome too.
 
 ## License
 

@@ -1,5 +1,5 @@
 // Judge: chosen members score a set of replies against a rubric without knowing who wrote what.
-import { chat } from './gmi.js';
+import { chat } from './llm.js';
 import { newId } from './store.js';
 import { readFileText } from './files.js';
 import { contextText } from './prompt.js';
