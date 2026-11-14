@@ -8,7 +8,7 @@ PanelShow runs on your own computer and holds your API key, and it can share pro
 - **Secrets in shared folders and uploads.** Secret-named files and folders are skipped and credential-looking values are replaced by `[redacted]`.
 
 ## What it does not protect against
-- **Anything a model reads is sent to the model provider.** Share only code and files you are allowed to send.
+- **Anything a model reads is sent to the model provider:** GMI Cloud for cloud models, or your Ollama server for local models. Share only code and files you are allowed to send.
 - **Redaction is best effort.** Use `.gitignore` or `.panelshowignore` to leave out files that must not be read.
 - **Other programs on your computer** can call the local API, like any local app.
 - **Text in pages and files can try to steer a model** (prompt injection). Members are told it is material, not instructions; this lowers the risk, it does not remove it.

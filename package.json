@@ -1,7 +1,7 @@
 {
   "name": "panelshow",
   "version": "0.1.0",
-  "description": "Host your own AI panel show: invite GMI Cloud models into one group chat, let them argue, read your code, and judge each other blind.",
+  "description": "Host your own AI panel show: invite GMI Cloud or local Ollama models into one group chat, let them argue, read your code, and judge each other blind.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -14,6 +14,7 @@
     "llm-as-judge",
     "code-review",
     "gmi-cloud",
+    "ollama",
     "debate",
     "local-first"
   ],
