@@ -1,7 +1,7 @@
 // Runs a conversation: who speaks when, what they can see, and what happens to what they write.
 import { EventEmitter } from 'node:events';
 import { config } from './config.js';
-import { chat, GmiError } from './gmi.js';
+import { chat, GmiError } from './llm.js';
 import { newId, saveRoom, setCapability } from './store.js';
 import { writeMemberFile } from './files.js';
 import { openUrl, extractUrls } from './resources.js';

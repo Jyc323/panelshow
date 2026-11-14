@@ -3,7 +3,7 @@
 What is planned next. Ideas and pull requests are welcome.
 
 ## Models and providers
-- [ ] Other OpenAI-compatible providers: OpenRouter, Ollama, LM Studio
+- [ ] Other OpenAI-compatible providers: OpenRouter, LM Studio
 - [ ] Function calling for models that support it, for more reliable file and link requests
 
 ## Working with code

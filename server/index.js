@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, ROOT } from './config.js';
 import { listRooms, getRoom, createRoom, saveRoom, deleteRoom, newId, getCapabilities, setCapability } from './store.js';
-import { listModels, probeModel, GmiError } from './gmi.js';
+import { listModels, probeModel, GmiError, cannotCall, providers } from './llm.js';
 import { startRun, stopRun, isRunning, subscribe, emit, claim, release } from './orchestrator.js';
 import { runJudge, RUBRICS } from './judge.js';
 import { saveUpload, readFileText, rawFilePath } from './files.js';
@@ -59,7 +59,7 @@ const needRoom = (id) => getRoom(id) || (() => { throw fail(404, 'That room does
 
 const probing = new Set();
 function probeInBackground(model, room) {
-  if (!config.autoProbe || !config.apiKey || getCapabilities()[model] || probing.has(model)) return;
+  if (!config.autoProbe || cannotCall(model) || getCapabilities()[model] || probing.has(model)) return;
   probing.add(model);
   probeModel(model)
     .then((r) => {
@@ -88,7 +88,7 @@ async function api(req, res, url) {
   const method = req.method;
   const is = (m, ...pattern) => method === m && seg.length === pattern.length && pattern.every((p, i) => p === '*' || p === seg[i]);
 
-  if (is('GET', 'health')) return send(res, 200, { ok: true, hasKey: Boolean(config.apiKey), ffmpeg: await hasFfmpeg(), baseUrl: config.baseUrl, rubrics: RUBRICS });
+  if (is('GET', 'health')) return send(res, 200, { ok: true, hasKey: Boolean(config.apiKey), providers: await providers(), ffmpeg: await hasFfmpeg(), baseUrl: config.baseUrl, rubrics: RUBRICS });
 
   if (is('GET', 'models')) {
     try {
@@ -203,14 +203,12 @@ async function api(req, res, url) {
 
   // Smart invite. GET: what a suggestion will cost now. POST {topic, count}: proposed members (nothing is added).
   if (is('GET', 'rooms', '*', 'suggest')) {
-    if (!config.apiKey) throw fail(400, 'GMI_API_KEY is not set.');
     return send(res, 200, await planCost(room));
   }
   if (is('POST', 'rooms', '*', 'suggest')) {
     const b = await json(req);
     const topic = String(b.topic || '').trim();
     if (!topic) throw fail(400, 'Describe the topic first.');
-    if (!config.apiKey) throw fail(400, 'GMI_API_KEY is not set. Copy .env.example to .env, add your key, and restart.');
     const ac = new AbortController();
     res.on('close', () => !res.writableEnded && ac.abort());
     const result = await suggestMembers(room, { topic: topic.slice(0, 8000), count: b.count, signal: ac.signal });
@@ -242,7 +240,8 @@ async function api(req, res, url) {
     if (!text) throw fail(400, 'Write a message first.');
     if (text.length > 100000) throw fail(400, 'That message is too long.');
     if (!room.members.length) throw fail(400, 'Invite at least one model first.');
-    if (!config.apiKey) throw fail(400, 'GMI_API_KEY is not set. Copy .env.example to .env, add your key, and restart.');
+    const blocked = room.members.map((m) => cannotCall(m.model)).find(Boolean);
+    if (blocked) throw fail(400, blocked);
     const { host } = startRun(room, { text, mode: b.mode, rounds: b.rounds, maxHops: b.maxHops, attachments: Array.isArray(b.attachments) ? b.attachments.map(String) : [] });
     return send(res, 202, { message: host });
   }
@@ -252,7 +251,9 @@ async function api(req, res, url) {
   }
   if (is('POST', 'rooms', '*', 'judge')) {
     const b = await json(req);
-    if (!config.apiKey) throw fail(400, 'GMI_API_KEY is not set.');
+    const judges = room.members.filter((m) => (b.judgeIds || []).includes(m.id));
+    const blockedJudge = judges.map((m) => cannotCall(m.model)).find(Boolean);
+    if (blockedJudge) throw fail(400, blockedJudge);
     const ctl = claim(room);
     if (!ctl) throw fail(409, 'The members are still replying. Stop them first.');
     runJudge(room, { messageIds: b.messageIds || [], judgeIds: b.judgeIds || [], rubric: b.rubric, criteria: b.criteria, extra: b.extra, signal: ctl.signal })
@@ -341,6 +342,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
   createServer().listen(config.port, config.host, () => {
     console.log(`PanelShow is running at http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`);
-    if (!config.apiKey) console.log('GMI_API_KEY is not set: copy .env.example to .env and add your key, then restart.');
+    if (!config.apiKey) console.log('GMI_API_KEY is not set: GMI Cloud models are off. Local models from Ollama still work if Ollama is running.');
+    if (config.ollamaUrl) console.log(`Local models: looking for Ollama at ${config.ollamaUrl}`);
   });
 }

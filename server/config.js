@@ -34,6 +34,11 @@ export const config = {
   requestTimeoutMs: Number(opt('TIMEOUT_MS') || 300000),
   autoProbe: opt('AUTO_PROBE') !== '0', // two tiny requests when a model is first invited: does it answer, can it see images
 
+  // Local models through Ollama. "off" switches them off; otherwise the server is looked for at this address.
+  ollamaUrl: ['off', 'none', '0'].includes(String(opt('OLLAMA_URL') || '').toLowerCase()) ? '' : (opt('OLLAMA_URL') || 'http://127.0.0.1:11434').replace(/\/+$/, ''),
+  ollamaNumCtx: Number(opt('OLLAMA_NUM_CTX') || 16384), // context window per local request (prompt + reply)
+  ollamaConcurrency: Number(opt('OLLAMA_CONCURRENCY') || 1), // local requests at the same time
+
   // Context budgets (characters, not tokens).
   transcriptChars: 60000,
   resourceChars: 12000, // per file or page shown to a member

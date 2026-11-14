@@ -3,7 +3,7 @@
 # PanelShow
 
 **把多个 AI 模型放进同一场讨论，由你主持。**<br>
-成员之间可以互相质疑、指定下一位发言者，最后在匿名条件下互相评审。模型由 GMI Cloud 提供。
+成员之间可以互相质疑、指定下一位发言者，最后在匿名条件下互相评审。模型来自 GMI Cloud，也可以用 Ollama 在本机运行。
 
 [English](README.md) · 简体中文
 
@@ -38,6 +38,18 @@ npm start               # 打开 http://127.0.0.1:8790
 没有 API key 时，可以运行 `npm run demo` 体验完整流程。该模式使用脚本模拟的模型，不调用 API，也不产生费用。
 
 一个 GMI Cloud API key 即可调用平台上的所有对话模型（[在此获取](https://console.gmicloud.ai/ref/ZPU349MK)，推荐链接）。
+
+### 本地模型（Ollama）
+
+PanelShow 也支持通过 [Ollama](https://ollama.com) 在本机运行的模型，有没有 GMI key 都可以使用。先启动 Ollama 并下载一两个模型，再启动 PanelShow：
+
+```bash
+ollama pull qwen3:8b
+ollama pull gemma3:4b
+npm start
+```
+
+PanelShow 默认在 `http://127.0.0.1:11434` 查找 Ollama。本地模型在邀请列表中单独分组显示，并且可以和 GMI Cloud 模型在同一个房间中混用。
 
 ## 示例：一场完整的讨论
 
@@ -107,6 +119,10 @@ PanelShow 不会对共享文件夹做任何写入。以下内容不会提供给�
 - 发送消息时可附带文本、PDF 或 Word 文件。
 - 成员可以将报告、代码和数据写入共享文件区，也可以通过 `@@read 文件名` 或 `@@open 链接` 主动获取更多资料。
 
+### 云端模型与本地模型混用
+
+成员可以是 GMI Cloud 模型、本地 Ollama 模型，或两者混合。本地模型通过 Ollama 的原生接口调用，并显式设置上下文窗口（`num_ctx`，默认 16K），因为 Ollama 默认的窗口较小，会在不报错的情况下截断 PanelShow 的提示词。本地成员依次运行，避免多个本地模型争抢内存；在并行模式下，它们仍然互相看不到彼此的回答。智能邀请将每个本地模型系列视为一个独立厂商，并且不对本地模型套用云端模型的参数量下限。没有 GMI key 时，智能邀请按规则挑选本地模型，不发送规划请求。
+
 ### 本地运行，依赖精简
 
 PanelShow 由一个监听 `127.0.0.1` 的 Node 服务和一个网页组成，不依赖前端框架、构建工具或数据库，房间数据以 JSON 文件保存。API key 只保存在 `.env` 中，不会发送到浏览器。所有房间都可以导出为 Markdown。
@@ -137,10 +153,13 @@ PanelShow 由一个监听 `127.0.0.1` 的 Node 服务和一个网页组成，不
 | `PANELSHOW_AUTO_PROBE` | `1` | 设为 `0` 时，跳过对新邀请模型的两项轻量测试 |
 | `PANELSHOW_ALLOW_PRIVATE_URLS` | `0` | 设为 `1` 时，允许成员访问 localhost 和局域网地址 |
 | `PANELSHOW_DATA_DIR` | `./data` | 房间数据的存储目录 |
+| `PANELSHOW_OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama 服务地址；设为 `off` 时关闭本地模型 |
+| `PANELSHOW_OLLAMA_NUM_CTX` | `16384` | 每次本地请求的上下文窗口（提示词和回答合计）；值越大，占用内存越多 |
+| `PANELSHOW_OLLAMA_CONCURRENCY` | `1` | 同时运行的本地请求数 |
 
 ## 费用
 
-每条回答对应一次计费请求。发送消息前，输入框旁会显示本次将触发的请求数。GIF 中的对话共产生 13 次请求（8 条回答和 5 位评审），智能邀请的规划额外消耗 1 次。智能邀请首次使用某个模型时，还会发起两次极小的测试请求，测试结果会被缓存，之后不再重复。
+每条回答对应一次计费请求。发送消息前，输入框旁会显示本次将触发的请求数。GIF 中的对话共产生 13 次请求（8 条回答和 5 位评审），智能邀请的规划额外消耗 1 次。智能邀请首次使用某个模型时，还会发起两次极小的测试请求，测试结果会被缓存，之后不再重复。通过 Ollama 运行的本地模型不按请求计费，智能邀请通过查询 Ollama 的模型信息来检查它们，不发送测试请求。
 
 ## 安全与隐私
 
@@ -149,13 +168,14 @@ PanelShow 由一个监听 `127.0.0.1` 的 Node 服务和一个网页组成，不
 - 成员只能访问公开的 `http(s)` 地址，本机和内网地址默认禁止访问。
 - 共享文件夹为只读。只有扫描清单中的文件可以读取；读取时不跟随符号链接，并校验打开的文件与扫描时一致；文件夹被移动或替换后停止共享。存在硬链接的文件、名称像密钥的文件和目录均会跳过，依赖、二进制文件以及被忽略规则排除的内容也不会共享。疑似凭据的值会被脱敏，上传的文件同样适用。请注意，成员读取的内容仍会发送给模型服务商，请只共享可以对外发送的代码。
 - 网页和文件中的文字会作为参考资料提供给成员，并明确标注其不是指令。这可以降低网页内容操纵模型的风险，但无法完全消除。
+- 本地模型的请求只发送到 `.env` 中配置的 Ollama 地址，浏览器无法修改该地址。如果所有成员都是本地模型，成员读取的内容只会发送到这个 Ollama 服务。
 - 成员生成的文件以纯文本形式展示，不会作为网页执行。
 
 防护范围和安全问题的报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## 路线图
 
-- [ ] 支持其他 OpenAI 兼容接口，如 OpenRouter、Ollama、LM Studio（目前仅支持 GMI Cloud）
+- [ ] 支持其他 OpenAI 兼容接口，如 OpenRouter、LM Studio（目前支持 GMI Cloud 和 Ollama）
 - [ ] 内置讨论预设，如议会、点评、辩论
 - [ ] 以美元显示费用，并支持按房间设置预算上限
 - [ ] 支持图片和 3D 模型附件
@@ -169,15 +189,24 @@ PanelShow 由一个监听 `127.0.0.1` 的 Node 服务和一个网页组成，不
 ## 开发
 
 ```bash
-npm test     # 29 个端到端测试，基于模拟的模型服务运行，无需 API key，也无需联网
+npm test     # 37 个端到端测试，基于模拟的 GMI 和 Ollama 服务运行，无需 API key，也无需联网
 npm run demo # 使用模拟模型运行完整应用
 ```
 
-`server/` 为 Node 服务端：`orchestrator.js` 负责发言调度，`casting.js` 负责智能邀请，`judge.js` 负责匿名评审，`workspace.js` 负责只读项目文件夹。`web/` 为前端页面，基于 Preact + htm，无需构建。
+`server/` 为 Node 服务端：`llm.js` 将每次模型调用分发给 GMI Cloud（`gmi.js`）或 Ollama（`ollama.js`），`orchestrator.js` 负责发言调度，`casting.js` 负责智能邀请，`judge.js` 负责匿名评审，`workspace.js` 负责只读项目文件夹。`web/` 为前端页面，基于 Preact + htm，无需构建。
 
 ## 致谢
 
 本项目基于 [GMI Cloud](https://www.gmicloud.ai/) 构建，所有模型通过同一个 OpenAI 兼容接口调用。API key 可在 [GMI Cloud 控制台](https://console.gmicloud.ai/ref/ZPU349MK)获取（推荐链接）。
+
+## 联系我
+
+有问题、想法，或者想分享你怎么用 PanelShow？欢迎来找我聊：
+
+- X：[@jiayuliiop8](https://x.com/jiayuliiop8)
+- LinkedIn：[Jiayu Danielle Li](https://www.linkedin.com/in/jiayu-danielle-li-158102188/)
+
+也欢迎提 Issue 和 PR。
 
 ## 许可证
 

@@ -1,5 +1,6 @@
 // Turns the shared room into the request one member receives, and reads what a member wrote back.
 import { config } from './config.js';
+import { isLocal } from './ollama.js';
 import { getCapabilities } from './store.js';
 import { readFileText } from './files.js';
 import { openUrl, imageDataUrl } from './resources.js';
@@ -294,10 +295,12 @@ export async function buildMessages(room, member, visible, { note = '', extra = 
       entries.push({ own: false, text: `[System]: ${m.text}`, msg: m });
     }
   }
-  // Keep the newest part of a long conversation.
+  // Keep the newest part of a long conversation. Local models get less: their context window is smaller.
+  const local = isLocal(member.model);
+  const transcriptBudget = local ? Math.min(config.transcriptChars, Math.floor(config.ollamaNumCtx * 1.6)) : config.transcriptChars;
   let total = entries.reduce((n, e) => n + e.text.length, 0);
   let dropped = 0;
-  while (entries.length > 6 && total > config.transcriptChars) {
+  while (entries.length > (local ? 2 : 6) && total > transcriptBudget) {
     total -= entries.shift().text.length;
     dropped++;
   }
@@ -318,7 +321,8 @@ export async function buildMessages(room, member, visible, { note = '', extra = 
     for (const f of e.msg.files || []) if (!f.error) add({ kind: 'file', path: f.path });
     for (const r of e.msg.refs || []) if (r.ok) add({ kind: 'url', url: r.url });
   }
-  const rendered = items.length ? await renderResources(room, items, { vision, signal }) : { text: '', images: [] };
+  const budget = local ? Math.min(config.resourcesTotalChars, Math.floor(config.ollamaNumCtx * 0.6)) : config.resourcesTotalChars;
+  const rendered = items.length ? await renderResources(room, items, { vision, signal, budget }) : { text: '', images: [] };
 
   const messages = [{ role: 'system', content: systemPrompt(room, member, vision) }];
   let pending = dropped ? ['[System]: Earlier messages were left out to save space.'] : [];

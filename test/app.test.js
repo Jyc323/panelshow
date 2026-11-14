@@ -16,11 +16,14 @@ import { parseReply, contextText, isPass, addressees } from '../server/prompt.js
 import { readVerdict, judgePrompt } from '../server/judge.js';
 import { hasFfmpeg } from '../server/media.js';
 import { chat } from '../server/gmi.js';
+import { probeModel } from '../server/llm.js';
+import { toOllamaMessages } from '../server/ollama.js';
+import { createFakeOllama } from './fake-ollama.js';
 import { describeModel, buildShortlist, fillByRules, validatePicks } from '../server/casting.js';
 import { resolveTarget, redactSecrets } from '../server/workspace.js';
 
 const KEY = 'test-key-SECRET-123';
-let fake, app, base, site, siteUrl;
+let fake, ollama, app, base, site, siteUrl;
 
 // A noisy PNG large enough to count as a real picture.
 function png(w = 64, h = 64) {
@@ -56,7 +59,9 @@ test.before(async () => {
   // A throwaway home folder: tests create folders "in the home folder" and must never touch the real one.
   process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-home-'));
   fake = await createFakeGmi();
+  ollama = await createFakeOllama();
   config.baseUrl = fake.url;
+  config.ollamaUrl = ''; // local models are off except in the tests that switch them on
   config.apiKey = KEY;
   config.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mrt-test-'));
   config.allowPrivateUrls = true; // the test web site is on 127.0.0.1
@@ -84,6 +89,7 @@ test.before(async () => {
 
 test.after(async () => {
   await fake.close();
+  await ollama.close();
   await new Promise((r) => app.close(r));
   await new Promise((r) => site.close(r));
 });
@@ -669,3 +675,131 @@ test('reads a streamed reply even when its header says JSON, and a plain JSON re
   assert.equal((await ask()).text, 'Hello from a mislabeled stream.');
   assert.equal((await ask()).text, 'Plain JSON reply.');
 });
+
+// ---------- local models (Ollama) ----------
+
+async function withOllama(fn, { key = KEY } = {}) {
+  config.ollamaUrl = ollama.url;
+  config.apiKey = key;
+  try {
+    return await fn();
+  } finally {
+    config.ollamaUrl = '';
+    config.apiKey = KEY;
+  }
+}
+
+test('ollama: local models are listed next to GMI models; embedding models are left out', () =>
+  withOllama(async () => {
+    const { models } = (await call('GET', '/api/models?refresh=1')).json;
+    const ids = models.map((m) => m.id);
+    assert.ok(ids.includes('ollama:qwen3:8b') && ids.includes('ollama:llava:7b'));
+    assert.ok(!ids.some((id) => /embed/.test(id)));
+    assert.ok(ids.includes('demo/optimist'), 'GMI models are still listed');
+    assert.equal(models.find((m) => m.id === 'ollama:qwen3:8b').provider, 'ollama');
+    const health = (await call('GET', '/api/health')).json;
+    assert.equal(health.providers.ollama.reachable, true);
+  }));
+
+test('ollama: a mixed room talks to both; local requests use the native API with num_ctx', () =>
+  withOllama(async () => {
+    const mark = fake.requests.length;
+    const omark = ollama.requests.length;
+    const { id } = await newRoom(['Cloud', 'demo/optimist'], ['Local', 'ollama:qwen3:8b']);
+    const room = await say(id, 'Hello both.', { mode: 'parallel' });
+    const replies = room.messages.filter((m) => m.role === 'member');
+    assert.equal(replies.length, 2);
+    const local = replies.find((m) => m.name === 'Local');
+    assert.equal(local.status, 'done', local.error);
+    assert.match(local.text, /Local answer from qwen3:8b/);
+    assert.equal(local.usage.prompt, 321);
+    assert.equal(requestsFor('demo/optimist', mark).length, 1);
+    assert.equal(requestsFor('ollama:qwen3:8b', mark).length, 0, 'local models never go to GMI');
+    const req = ollama.requests.slice(omark).find((r) => r.url === '/api/chat');
+    assert.equal(req.body.model, 'qwen3:8b');
+    assert.equal(req.body.options.num_ctx, config.ollamaNumCtx);
+    assert.ok(req.body.options.num_predict <= config.ollamaNumCtx / 4);
+    assert.ok(req.body.messages.every((m) => typeof m.content === 'string'), 'plain string content');
+  }));
+
+test('ollama: local members answer one at a time, even in parallel mode', () =>
+  withOllama(async () => {
+    ollama.stats.maxInflight = 0;
+    const { id } = await newRoom(['A', 'ollama:qwen3:8b'], ['B', 'ollama:llava:7b'], ['C', 'ollama:qwen3:8b']);
+    const room = await say(id, '@all quick check', { mode: 'parallel' });
+    assert.equal(room.messages.filter((m) => m.role === 'member' && m.status === 'done').length, 3);
+    assert.equal(ollama.stats.maxInflight, 1);
+  }));
+
+test('ollama: works without a GMI key; GMI members are refused with a clear message', () =>
+  withOllama(
+    async () => {
+      const local = await newRoom(['Solo', 'ollama:qwen3:8b']);
+      const room = await say(local.id, 'Only local here.');
+      assert.equal(room.messages.find((m) => m.role === 'member').status, 'done');
+      const mixed = await newRoom(['Cloud', 'demo/optimist'], ['Local', 'ollama:qwen3:8b']);
+      const r = await call('POST', `/api/rooms/${mixed.id}/send`, { text: 'hi' });
+      assert.equal(r.status, 400);
+      assert.match(r.text, /GMI_API_KEY/);
+      const { models } = (await call('GET', '/api/models?refresh=1')).json;
+      assert.ok(models.length && models.every((m) => m.id.startsWith('ollama:')));
+    },
+    { key: '' }
+  ));
+
+test('ollama: capabilities come from /api/show, not from test requests', () =>
+  withOllama(async () => {
+    const before = ollama.requests.filter((r) => r.url === '/api/chat').length;
+    const v = await probeModel('ollama:llava:7b');
+    assert.equal(v.ok, true);
+    assert.equal(v.vision, true);
+    const t = await probeModel('ollama:qwen3:8b');
+    assert.equal(t.vision, false);
+    const e = await probeModel('ollama:nomic-embed-text:latest');
+    assert.equal(e.ok, false);
+    const missing = await probeModel('ollama:not-pulled:1b');
+    assert.equal(missing.ok, false);
+    assert.equal(ollama.requests.filter((r) => r.url === '/api/chat').length, before, 'no chat requests for checks');
+  }));
+
+test('ollama: images become base64 in the images field', () => {
+  const out = toOllamaMessages([
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } }, { type: 'image_url', image_url: { url: 'https://example.com/x.png' } }] },
+  ]);
+  assert.deepEqual(out[0], { role: 'system', content: 'sys' });
+  assert.deepEqual(out[1], { role: 'user', content: 'look', images: ['QUJD'] });
+});
+
+test('ollama: Smart invite with only local models uses rules and sends no planning request', () =>
+  withOllama(
+    async () => {
+      resetCapabilities();
+      const mark = fake.requests.length;
+      const { id } = await newRoom();
+      const cost = (await call('GET', `/api/rooms/${id}/suggest`)).json;
+      assert.equal(cost.planning, 0);
+      assert.equal(cost.probes, 0);
+      const r = await call('POST', `/api/rooms/${id}/suggest`, { topic: 'Is tea better than coffee?', count: 3 });
+      assert.equal(r.status, 200, r.text);
+      const ids = r.json.members.map((m) => m.model).sort();
+      assert.deepEqual(ids, ['ollama:llava:7b', 'ollama:qwen3:8b']);
+      assert.equal(r.json.director, '');
+      assert.match(r.json.note, /local/i);
+      assert.equal(fake.requests.length, mark, 'nothing went to GMI');
+    },
+    { key: '' }
+  ));
+
+test('ollama: when Ollama is not running, GMI models are still listed without an error', async () => {
+  config.ollamaUrl = 'http://127.0.0.1:9';
+  try {
+    const r = (await call('GET', '/api/models?refresh=1')).json;
+    assert.ok(!r.error, r.error);
+    assert.ok(r.models.some((m) => m.id === 'demo/optimist'));
+    assert.ok(!r.models.some((m) => m.id.startsWith('ollama:')));
+  } finally {
+    config.ollamaUrl = '';
+  }
+});
+
