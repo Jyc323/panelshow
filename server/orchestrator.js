@@ -5,7 +5,9 @@ import { chat, GmiError } from './llm.js';
 import { newId, saveRoom, setCapability } from './store.js';
 import { writeMemberFile } from './files.js';
 import { openUrl, extractUrls } from './resources.js';
-import { buildMessages, parseReply, contextText, isPass, mentionsIn, addressees, memberVision, renderResources, continuation, readBudget } from './prompt.js';
+import { buildMessages, parseReply, parseImageRequests, contextText, isPass, mentionsIn, addressees, memberVision, renderResources, continuation, readBudget } from './prompt.js';
+import { imageCatalog, defaultImageModel, generateImage } from './images.js';
+import { addImage, imageBytes } from './roomImages.js';
 
 const bus = new EventEmitter();
 bus.setMaxListeners(0);
@@ -153,7 +155,105 @@ export async function memberTurn(room, member, ctl, { visible, note = '', round 
   if (msg.status === 'done' && !msg.pass) await attachLinks(room, msg, ctl.signal).catch(() => {});
   emit(room, { type: 'message', message: msg });
   saveRoom(room);
+  if (msg.status === 'done' && !msg.pass) await runImageRequests(room, ctl, { name: member.name, memberId: member.id }, parseImageRequests(msg.text));
   return msg;
+}
+
+/**
+ * Make the pictures asked for with @@draw / @@edit (by a member or the Host), one after another.
+ * Each request becomes an "image" message that shows progress, then the picture (img-N) or the error.
+ */
+export async function runImageRequests(room, ctl, by, requests) {
+  if (!requests.length) return;
+  const perTurn = requests.slice(0, Math.max(0, config.imagesPerTurn));
+  const skipped = requests.length - perTurn.length;
+  let models = [];
+  let catalogError = '';
+  if (config.apiKey) {
+    try {
+      models = await imageCatalog();
+    } catch (e) {
+      catalogError = e.message;
+    }
+  }
+  for (const q of perTurn) {
+    if (ctl.signal.aborted) break;
+    // "Note: …" is not a model: put it back into the prompt.
+    if (q.model && !models.some((m) => m.id.toLowerCase() === q.model.toLowerCase()) && !/[.\-/]\d|-/.test(q.model)) {
+      q.prompt = `${q.model}: ${q.prompt}`.trim();
+      q.model = '';
+    }
+    const named = q.model && models.find((m) => m.id.toLowerCase() === q.model.toLowerCase());
+    let model = named ? named.id : '';
+    if (!q.model) {
+      model = defaultImageModel(models);
+      if (q.type === 'edit' && !(models.find((m) => m.id === model) || {}).imageToImage) model = (models.find((m) => m.imageToImage && m.textToImage) || models.find((m) => m.imageToImage) || {}).id || model;
+    }
+    const msg = { id: newId(), role: 'image', name: by.name, memberId: by.memberId || null, action: q.type, model: model || q.model, prompt: q.prompt, refs: q.refs, aspect: q.aspect, images: [], status: 'generating', progress: 'starting', at: Date.now() };
+    room.messages.push(msg);
+    emit(room, { type: 'message', message: msg });
+    const fail = (text) => {
+      msg.status = 'error';
+      msg.error = text;
+    };
+    ctl.imagesMade = ctl.imagesMade || 0;
+    if (!config.apiKey) fail('Pictures are made on GMI Cloud, and GMI_API_KEY is not set.');
+    else if (catalogError) fail(`The list of image models could not be loaded: ${catalogError}`);
+    else if (q.model && !named) fail(`${q.model} is not an image model on this GMI key.`);
+    else if (!model) fail('No image model is available on this GMI key.');
+    else if (!q.prompt) fail('The request has no prompt.');
+    else if (ctl.imagesMade >= config.imagesPerRun) fail(`This run already made ${config.imagesPerRun} pictures (PANELSHOW_IMAGES_PER_RUN). Send a new message to make more.`);
+    else {
+      const refs = [];
+      for (const id of q.refs) {
+        const got = imageBytes(room, id);
+        if (!got) {
+          fail(`There is no picture ${id} in this room.`);
+          break;
+        }
+        refs.push({ buffer: got.buffer, mime: got.mime });
+      }
+      if (msg.status === 'generating') {
+        ctl.imagesMade++;
+        const t0 = Date.now();
+        try {
+          const r = await generateImage({
+            model,
+            prompt: q.prompt,
+            refs,
+            aspect: q.aspect,
+            signal: ctl.signal,
+            onStatus: (s) => {
+              msg.progress = s;
+              msg.elapsed = Math.round((Date.now() - t0) / 1000);
+              emit(room, { type: 'message', message: msg });
+            },
+          });
+          const img = addImage(room, r.buffer, { source: 'generated', by: by.name, model, prompt: q.prompt, refs: q.refs, requestId: r.requestId });
+          msg.images = [img.id];
+          setCapability(`image:${model}`, { ok: true, error: '', at: Date.now() });
+          msg.payload = r.payload;
+          msg.seconds = r.seconds;
+          msg.status = 'done';
+        } catch (e) {
+          if (ctl.signal.aborted) msg.status = 'stopped';
+          else {
+            fail(e instanceof GmiError ? e.message : `Unexpected error: ${e.message}`);
+            setCapability(`image:${model}`, { ok: false, error: msg.error.slice(0, 160), at: Date.now() });
+          }
+        }
+      }
+    }
+    delete msg.progress;
+    emit(room, { type: 'message', message: msg });
+    if (msg.images.length) emit(room, { type: 'images', images: room.images });
+    saveRoom(room);
+  }
+  if (skipped > 0) {
+    const note = { id: newId(), role: 'system', name: 'System', text: `${skipped} more picture request${skipped === 1 ? ' was' : 's were'} skipped: at most ${config.imagesPerTurn} per turn.`, status: 'done', at: Date.now() };
+    room.messages.push(note);
+    emit(room, { type: 'message', message: note });
+  }
 }
 
 export const RELAY_FANOUTS = 2; // "ask everyone" steps allowed in one relay run, to keep the cost bounded
@@ -205,14 +305,14 @@ async function runRelay(room, ctl, host, maxHops) {
  * The Host sends a message and the members answer in the chosen mode.
  * Returns once the Host message is recorded; the run continues in the background.
  */
-export function startRun(room, { text, mode, rounds, maxHops, attachments = [] }) {
+export function startRun(room, { text, mode, rounds, maxHops, attachments = [], images = [] }) {
   const ctl = claim(room);
   if (!ctl) throw Object.assign(new Error('The members are still replying. Stop them first.'), { status: 409 });
   mode = ['roundtable', 'parallel', 'relay'].includes(mode) ? mode : 'roundtable';
   rounds = Math.min(5, Math.max(1, Number(rounds) || 1));
   maxHops = Math.min(12, Math.max(1, Number(maxHops) || 6));
   room.settings = { mode, rounds, maxHops };
-  const host = { id: newId(), role: 'host', name: 'Host', text: String(text), status: 'done', at: Date.now(), files: attachments.filter((p) => room.files.some((f) => f.path === p)).map((p) => ({ path: p })), refs: [] };
+  const host = { id: newId(), role: 'host', name: 'Host', text: String(text), status: 'done', at: Date.now(), files: attachments.filter((p) => room.files.some((f) => f.path === p)).map((p) => ({ path: p })), images: images.filter((id) => (room.images || []).some((x) => x.id === id)), refs: [] };
   room.messages.push(host);
   emit(room, { type: 'message', message: host });
 
@@ -220,6 +320,9 @@ export function startRun(room, { text, mode, rounds, maxHops, attachments = [] }
     try {
       await attachLinks(room, host, ctl.signal).catch(() => {});
       saveRoom(room);
+      // Pictures the Host asked for come first, so the members can see them.
+      await runImageRequests(room, ctl, { name: 'Host' }, parseImageRequests(host.text));
+      if (ctl.signal.aborted) return;
       const mentioned = mentionsIn(host.text, room.members);
       const targets = mentioned.length ? mentioned : [...room.members];
       if (mode === 'parallel') {

@@ -3,7 +3,7 @@
 # PanelShow
 
 **Host your own AI panel show.**<br>
-Put several AI models into one discussion. They question each other, choose who speaks next, and review each other's answers anonymously. Models come from GMI Cloud, or run on your own machine with Ollama.
+Put several AI models into one discussion. They question each other, choose who speaks next, and review each other's answers anonymously. They can also critique, draw and edit pictures together. Models come from GMI Cloud, or run on your own machine with Ollama.
 
 English · [简体中文](README.zh-CN.md)
 
@@ -116,8 +116,30 @@ PanelShow never writes to a shared folder. The following are never shown to mode
 ### Links, attachments and shared files
 
 - Links in a message are opened on the server. Web pages are reduced to their main text, and members that accept images also get up to 3 pictures. PDF and Word documents are converted to text. A direct video link becomes one contact sheet of 12 frames (requires ffmpeg). For YouTube links, the title, description and captions are read.
-- You can attach text, PDF or Word files to a message.
+- You can attach text, PDF or Word files, or pictures, to a message.
 - Members can write reports, code and data into a shared file area, and request more material with `@@read filename` or `@@open url`.
+
+### Pictures: critique, draw and edit in the chat
+
+<p align="center"><img src="docs/media/panelshow-image-critique.gif" alt="Three models critique a cluttered jazz poster, agree on a new prompt, and one of them draws the new version" width="800"><br><sub>Recorded live on GMI Cloud: three members critique a cluttered poster, agree on a better prompt, and one of them draws it. <a href="docs/examples/jazz-poster-critique.md">Full transcript</a></sub></p>
+
+- Paste, drop or attach a PNG, JPEG, WebP or GIF. Every picture in a room gets an id (`img-1`, `img-2` …) that you and the members can refer to. Members that accept images see new pictures; the others are told that a picture was added and that they cannot see it.
+- You or any member can ask for a picture by starting a line with a directive:
+
+| Line | Result |
+|---|---|
+| `@@draw a poster for a jazz night ar=3:4` | a new picture from the default image model, in portrait |
+| `@@draw gemini-3.1-flash-image: a poster for a jazz night` | the same, with a chosen model |
+| `@@edit img-1 make it a winter edition` | an edited copy of img-1 |
+| `@@edit img-1,img-2 seedream-5.0-lite: put the logo from img-2 on img-1` | an edit that uses several pictures as references |
+
+- The prompt is the text written in the chat; nothing rewrites it. Members can discuss the prompt first, and are told to draw only when you ask or the group has agreed.
+- The Edit button under a picture adds `@@edit img-N` to the message box.
+- The list of image models, with prices, is read from GMI Cloud and cached for 24 hours. Members see which models worked recently and which failed on the last try. The default model is `seedream-5.0-lite` (`PANELSHOW_IMAGE_MODEL`). Models that need input PanelShow cannot provide, such as a mask, are left out.
+- When GMI Cloud is busy (HTTP 5xx or 429), the request is tried twice more. A failed or timed-out picture shows its error in the chat, and the discussion continues.
+- At most 4 pictures per reply and 8 per message you send.
+
+<p align="center"><img src="docs/media/panelshow-image-edits.gif" alt="Three editors edit the same poster with three different image models at once, a curator picks one, and the Host fixes the date line" width="800"><br><sub>Parallel mode: three editors edit the same poster with three different image models at the same time, a curator picks one, and the Host fixes one line with the Edit button. <a href="docs/examples/jazz-poster-winter-edits.md">Full transcript</a></sub></p>
 
 ### Cloud and local models in one room
 
@@ -156,10 +178,14 @@ Only the API key is required. Everything else is optional and goes in `.env` (se
 | `PANELSHOW_OLLAMA_URL` | `http://127.0.0.1:11434` | Address of the Ollama server; `off` disables local models |
 | `PANELSHOW_OLLAMA_NUM_CTX` | `16384` | Context window per local request (prompt and reply); larger values need more memory |
 | `PANELSHOW_OLLAMA_CONCURRENCY` | `1` | How many local requests run at the same time |
+| `PANELSHOW_IMAGE_MODEL` | `seedream-5.0-lite` | Image model used when a `@@draw` or `@@edit` line names none |
+| `PANELSHOW_IMAGES_PER_RUN` | `8` | Maximum pictures made per message you send |
+| `PANELSHOW_IMAGES_PER_TURN` | `4` | Maximum pictures per reply |
+| `PANELSHOW_IMAGE_TIMEOUT_MS` | `300000` | How long to wait for one picture |
 
 ## Cost
 
-Each reply is one billed request. Before you send a message, the composer shows how many requests it will trigger. The session in the GIF used 13 requests (8 replies and 5 judges), plus 1 planning request for Smart invite. The first time Smart invite uses a model, it also sends two very small test requests; the results are cached and not repeated. Local models through Ollama cost nothing per request, and are checked by asking Ollama about the model instead of sending test requests.
+Each reply is one billed request. Before you send a message, the composer shows how many requests it will trigger. The session in the GIF used 13 requests (8 replies and 5 judges), plus 1 planning request for Smart invite. The first time Smart invite uses a model, it also sends two very small test requests; the results are cached and not repeated. Local models through Ollama cost nothing per request, and are checked by asking Ollama about the model instead of sending test requests. Pictures are billed per picture by GMI Cloud; the price depends on the model (about $0.01 to $0.20 per picture at the time of writing) and is shown to members in the model list.
 
 ## Security and privacy
 
@@ -170,6 +196,7 @@ Each reply is one billed request. Before you send a message, the composer shows 
 - Text from web pages and files is given to members as reference material, explicitly marked as not being instructions. This reduces the risk of page content steering a model, but cannot rule it out.
 - Files written by members are shown as plain text and never run as web pages.
 - Requests to local models go only to the Ollama address set in `.env`; the browser cannot change it. When every member is local, what members read is sent only to that Ollama server.
+- To edit a picture, PanelShow uploads it through GMI Cloud's upload route, which gives it a public URL that the image model fetches. Do not ask for edits of pictures that must stay private. Pictures are kept in the room's folder under `data/`.
 
 See [SECURITY.md](SECURITY.md) for the scope of these protections and how to report a security issue.
 
@@ -178,7 +205,8 @@ See [SECURITY.md](SECURITY.md) for the scope of these protections and how to rep
 - [ ] Other OpenAI-compatible providers, such as OpenRouter and LM Studio (GMI Cloud and Ollama for now)
 - [ ] Built-in discussion presets, such as Council, Critique and Debate
 - [ ] Costs shown in US dollars, with a budget cap per room
-- [ ] Images and 3D models as attachments
+- [ ] 3D models as attachments
+- [ ] Blind judge for pictures; video generation; image generation with local models
 - [ ] Share a discussion as a read-only page; export a verdict card as an image
 - [ ] Members propose changes to a shared folder as diffs, which you choose whether to apply
 - [ ] Sandboxed preview of member-written HTML; members edit each other's files with version history
@@ -189,11 +217,11 @@ Full roadmap: [TODO.md](TODO.md). Issues and pull requests are welcome.
 ## Development
 
 ```bash
-npm test     # 37 end-to-end tests against stand-in GMI and Ollama servers: no API key, no network
+npm test     # 46 end-to-end tests against stand-in GMI (chat and image) and Ollama servers: no API key, no network
 npm run demo # run the full app with stand-in models
 ```
 
-`server/` is the Node server: `llm.js` routes each model call to GMI Cloud (`gmi.js`) or Ollama (`ollama.js`), `orchestrator.js` schedules turns, `casting.js` handles Smart invite, `judge.js` runs the blind judge, and `workspace.js` manages read-only project folders. `web/` is the frontend page, built with Preact + htm and no build step.
+`server/` is the Node server: `llm.js` routes each model call to GMI Cloud (`gmi.js`) or Ollama (`ollama.js`), `orchestrator.js` schedules turns, `casting.js` handles Smart invite, `judge.js` runs the blind judge, `workspace.js` manages read-only project folders, `images.js` lists GMI image models and runs picture jobs, and `roomImages.js` stores each room's pictures. `web/` is the frontend page, built with Preact + htm and no build step.
 
 ## Credits
 

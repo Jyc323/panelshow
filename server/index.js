@@ -4,8 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, ROOT } from './config.js';
-import { listRooms, getRoom, createRoom, saveRoom, deleteRoom, newId, getCapabilities, setCapability } from './store.js';
+import { listRooms, getRoom, createRoom, saveRoom, deleteRoom, newId, getCapabilities, setCapability, roomDir } from './store.js';
 import { listModels, probeModel, GmiError, cannotCall, providers } from './llm.js';
+import { discover, imageCatalog } from './images.js';
+import { addImage, findImage, sniffImage } from './roomImages.js';
 import { startRun, stopRun, isRunning, subscribe, emit, claim, release } from './orchestrator.js';
 import { runJudge, RUBRICS } from './judge.js';
 import { saveUpload, readFileText, rawFilePath } from './files.js';
@@ -77,7 +79,8 @@ function exportMarkdown(room) {
       lines.push('### Verdict', '', m.text, '');
       for (const j of m.verdict.judges) if (j.result) lines.push(`- **${j.name}**: ${j.result.summary}`);
       lines.push('');
-    } else if (m.role === 'host') lines.push('### Host', '', m.text, '');
+    } else if (m.role === 'host') lines.push('### Host', '', m.text, ...(m.images?.length ? ['', `(pictures: ${m.images.join(', ')})`] : []), '');
+    else if (m.role === 'image') lines.push(`### ${m.name}: picture ${m.images.join(', ') || ''} (${m.model})`, '', m.status === 'done' ? `> ${m.prompt}` : `_${m.error || m.status}_`, '');
     else if (m.role === 'member' && !m.pass) lines.push(`### ${m.name} (${m.model})${m.status !== 'done' ? ` [${m.status}]` : ''}`, '', contextText(m.text, m.files) || (m.error ? `_${m.error}_` : ''), '');
   }
   return lines.join('\n');
@@ -96,6 +99,22 @@ async function api(req, res, url) {
     } catch (e) {
       return send(res, 200, { models: [], capabilities: getCapabilities(), error: e.message });
     }
+  }
+  if (is('GET', 'image-models')) {
+    if (!config.apiKey) return send(res, 200, { models: [], error: 'GMI_API_KEY is not set.' });
+    try {
+      return send(res, 200, { models: await imageCatalog({ refresh: url.searchParams.has('refresh') }) });
+    } catch (e) {
+      return send(res, 200, { models: [], error: e.message });
+    }
+  }
+  // Read-only discovery of GMI request-queue models and their parameter details (no generation, no cost).
+  if (is('GET', 'image-models', 'discover')) {
+    if (!config.apiKey) throw fail(400, 'GMI_API_KEY is not set.');
+    const models = await discover();
+    // Kept for inspection under data/ (git-ignored). Holds model descriptions only, never the key.
+    fs.writeFileSync(path.join(config.dataDir, 'queue-models.json'), JSON.stringify(models, null, 2));
+    return send(res, 200, { count: models.length, saved: 'data/queue-models.json' });
   }
   if (is('POST', 'probe')) {
     const { model } = await json(req);
@@ -242,7 +261,7 @@ async function api(req, res, url) {
     if (!room.members.length) throw fail(400, 'Invite at least one model first.');
     const blocked = room.members.map((m) => cannotCall(m.model)).find(Boolean);
     if (blocked) throw fail(400, blocked);
-    const { host } = startRun(room, { text, mode: b.mode, rounds: b.rounds, maxHops: b.maxHops, attachments: Array.isArray(b.attachments) ? b.attachments.map(String) : [] });
+    const { host } = startRun(room, { text, mode: b.mode, rounds: b.rounds, maxHops: b.maxHops, attachments: Array.isArray(b.attachments) ? b.attachments.map(String) : [], images: Array.isArray(b.images) ? b.images.map(String) : [] });
     return send(res, 202, { message: host });
   }
   if (is('POST', 'rooms', '*', 'stop')) {
@@ -264,6 +283,14 @@ async function api(req, res, url) {
 
   if (is('POST', 'rooms', '*', 'upload')) {
     const data = await body(req, config.uploadMaxBytes);
+    if (sniffImage(data)) {
+      // A picture: it gets an id (img-N) and goes to the members that can see.
+      const name = String(url.searchParams.get('name') || 'picture').replace(/[^A-Za-z0-9._ -]/g, '_').slice(0, 80);
+      const image = addImage(room, data, { source: 'upload', by: 'Host', name });
+      saveRoom(room);
+      emit(room, { type: 'images', images: room.images });
+      return send(res, 201, { image });
+    }
     let entry;
     try {
       entry = await saveUpload(room, url.searchParams.get('name') || 'file', data, extractDocText);
@@ -273,6 +300,15 @@ async function api(req, res, url) {
     saveRoom(room);
     emit(room, { type: 'files', files: room.files });
     return send(res, 201, entry);
+  }
+  if (is('GET', 'rooms', '*', 'images', '*')) {
+    const img = findImage(room, seg[3]);
+    if (!img) throw fail(404, 'That picture is not in this room.');
+    const full = path.join(roomDir(room.id), 'images', img.file);
+    if (!fs.existsSync(full)) throw fail(404, 'That picture file is missing.');
+    const headers = { 'Content-Type': img.mime, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' };
+    if (url.searchParams.has('download')) headers['Content-Disposition'] = `attachment; filename="${img.id}.${img.file.split('.').pop()}"`;
+    return send(res, 200, fs.readFileSync(full), headers);
   }
   if (is('GET', 'rooms', '*', 'file')) {
     const rel = url.searchParams.get('path') || '';
@@ -344,5 +380,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.log(`PanelShow is running at http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`);
     if (!config.apiKey) console.log('GMI_API_KEY is not set: GMI Cloud models are off. Local models from Ollama still work if Ollama is running.');
     if (config.ollamaUrl) console.log(`Local models: looking for Ollama at ${config.ollamaUrl}`);
+    if (config.apiKey) imageCatalog().catch(() => {}); // load the image model list in the background
   });
 }

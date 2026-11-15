@@ -19,11 +19,13 @@ import { chat } from '../server/gmi.js';
 import { probeModel } from '../server/llm.js';
 import { toOllamaMessages } from '../server/ollama.js';
 import { createFakeOllama } from './fake-ollama.js';
+import { createFakeQueue } from './fake-queue.js';
+import { buildPayload } from '../server/images.js';
 import { describeModel, buildShortlist, fillByRules, validatePicks } from '../server/casting.js';
 import { resolveTarget, redactSecrets } from '../server/workspace.js';
 
 const KEY = 'test-key-SECRET-123';
-let fake, ollama, app, base, site, siteUrl;
+let fake, ollama, queue, app, base, site, siteUrl;
 
 // A noisy PNG large enough to count as a real picture.
 function png(w = 64, h = 64) {
@@ -60,7 +62,10 @@ test.before(async () => {
   process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-home-'));
   fake = await createFakeGmi();
   ollama = await createFakeOllama();
+  queue = await createFakeQueue();
   config.baseUrl = fake.url;
+  config.queueUrl = queue.url; // image models: never the real GMI queue in tests
+  config.imagePollMs = 10;
   config.ollamaUrl = ''; // local models are off except in the tests that switch them on
   config.apiKey = KEY;
   config.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mrt-test-'));
@@ -90,6 +95,7 @@ test.before(async () => {
 test.after(async () => {
   await fake.close();
   await ollama.close();
+  await queue.close();
   await new Promise((r) => app.close(r));
   await new Promise((r) => site.close(r));
 });
@@ -801,5 +807,161 @@ test('ollama: when Ollama is not running, GMI models are still listed without an
   } finally {
     config.ollamaUrl = '';
   }
+});
+
+// ---------- pictures (GMI request queue) ----------
+
+test('images: the catalog keeps active image models with a prompt and maps their parameters', async () => {
+  const { models } = (await call('GET', '/api/image-models?refresh=1')).json;
+  assert.deepEqual(models.map((m) => m.id).sort(), ['pic-both', 'pic-edit', 'pic-fail', 'pic-flaky', 'pic-slow', 'pic-sync', 'pic-text', 'pic-wxh']);
+  const both = models.find((m) => m.id === 'pic-both');
+  assert.equal(both.textToImage, true);
+  assert.equal(both.imageToImage, true);
+  assert.equal(both.maxRefs, 4);
+  assert.equal(both.price, 0.035);
+  assert.equal(models.find((m) => m.id === 'pic-edit').textToImage, false, 'an input picture is required');
+  assert.deepEqual(buildPayload(both, { prompt: 'p', refs: ['u'], aspect: '3:4' }), { prompt: 'p', image: ['u'], size: '1536x2048', max_images: 1, watermark: false });
+  assert.deepEqual(buildPayload(models.find((m) => m.id === 'pic-text'), { prompt: 'p', aspect: '3:4' }), { text: 'p', aspect_ratio: '3:4' });
+  assert.deepEqual(buildPayload(models.find((m) => m.id === 'pic-edit'), { prompt: 'p', refs: ['u'] }), { prompt: 'p', image: 'u' });
+  const wxh = models.find((m) => m.id === 'pic-wxh');
+  assert.equal(buildPayload(wxh, { prompt: 'p', aspect: '3:4' }).size, '1024x1536');
+  assert.equal(buildPayload(wxh, { prompt: 'p', aspect: '16:9' }).size, '1536x1024');
+  assert.equal(buildPayload(wxh, { prompt: 'p' }).size, undefined);
+});
+
+test('images: the Host asks for a picture; it is made before the members speak, and they can see it', async () => {
+  const qmark = queue.requests.length;
+  const mark = fake.requests.length;
+  const { id, members } = await newRoom(['Eye', 'demo/optimist']);
+  await call('PATCH', `/api/rooms/${id}/members/${members[0].id}`, { vision: true });
+  const room = await say(id, 'Make a poster.\n@@draw a red fox in snow ar=3:4');
+  const pic = room.messages.find((m) => m.role === 'image');
+  assert.equal(pic.status, 'done', pic.error);
+  assert.deepEqual(pic.images, ['img-1']);
+  assert.equal(pic.model, 'pic-both', 'the default model when none is named');
+  assert.equal(pic.prompt, 'a red fox in snow');
+  const sub = queue.requests.slice(qmark);
+  assert.equal(sub.length, 1);
+  assert.equal(sub[0].payload.size, '1536x2048');
+  assert.ok(room.messages.findIndex((m) => m.role === 'image') < room.messages.findIndex((m) => m.role === 'member'));
+  const img = await fetch(`${base}/api/rooms/${id}/images/img-1`);
+  assert.equal(img.headers.get('content-type'), 'image/png');
+  assert.equal((await img.arrayBuffer()).byteLength, queue.fullSize, 'the full picture, not the preview');
+  assert.equal((await fetch(`${base}/api/rooms/${id}/images/..%2Froom.json`)).status, 404);
+  const req = requestsFor('demo/optimist', mark)[0];
+  assert.match(flat(req), /image_url/);
+  assert.match(flat(req), /Pictures attached below, in this order: img-1/);
+  assert.match(flat(req), /@@draw/);
+  assert.match(flat(req), /pic-both: new pictures, edits/);
+});
+
+test('images: a member edits an uploaded picture; the input goes through the upload route', async () => {
+  const qmark = queue.requests.length;
+  const umark = queue.uploads.length;
+  fake.queue('demo/skeptic', 'Agreed, changing it now.\n@@edit img-1 pic-edit: make the fox blue');
+  const { id } = await newRoom(['Skep', 'demo/skeptic']);
+  const up = await (await fetch(`${base}/api/rooms/${id}/upload?name=fox.png`, { method: 'POST', body: png(16, 16) })).json();
+  assert.equal(up.image.id, 'img-1');
+  const room = await say(id, 'Please change this picture.', { images: ['img-1'] });
+  assert.deepEqual(room.messages.find((m) => m.role === 'host').images, ['img-1']);
+  const pic = room.messages.find((m) => m.role === 'image');
+  assert.equal(pic.status, 'done', pic.error);
+  assert.equal(pic.action, 'edit');
+  assert.deepEqual(pic.refs, ['img-1']);
+  assert.deepEqual(pic.images, ['img-2']);
+  assert.equal(queue.uploads.length, umark + 1);
+  assert.equal(queue.uploads[umark].type, 'image/png');
+  const sent = queue.requests.slice(qmark)[0];
+  assert.equal(sent.model, 'pic-edit');
+  assert.match(sent.payload.image, /\/public\/\d+\.png$/, 'a single image field gets one hosted URL');
+  assert.equal(room.images.find((x) => x.id === 'img-2').source, 'generated');
+});
+
+test('images: clear errors for an unknown model, a failed job, a missing picture; "Note:" is not a model', async () => {
+  fake.queue('demo/writer', ['Trying a few things.', '@@draw nosuch-model-9: x', '@@draw pic-fail: y', '@@edit img-99 pic-edit: z', '@@draw Note: keep it simple'].join('\n'));
+  const { id } = await newRoom(['Writer', 'demo/writer']);
+  const room = await say(id, 'Go.');
+  const pics = room.messages.filter((m) => m.role === 'image');
+  assert.equal(pics.length, 4);
+  assert.match(pics[0].error, /nosuch-model-9 is not an image model/);
+  assert.match(pics[1].error, /content policy violation/);
+  assert.match(pics[2].error, /no picture img-99/);
+  assert.equal(pics[3].status, 'done', pics[3].error);
+  assert.equal(pics[3].prompt, 'Note: keep it simple');
+});
+
+test('images: at most PANELSHOW_IMAGES_PER_TURN pictures per turn, and a timeout is reported', async () => {
+  const keep = { turn: config.imagesPerTurn, timeout: config.imageTimeoutMs };
+  config.imagesPerTurn = 2;
+  config.imageTimeoutMs = 150;
+  try {
+    fake.queue('demo/writer', '@@draw pic-slow: one\n@@draw two\n@@draw three');
+    const { id } = await newRoom(['Writer', 'demo/writer']);
+    const room = await say(id, 'Go.');
+    const pics = room.messages.filter((m) => m.role === 'image');
+    assert.equal(pics.length, 2);
+    assert.match(pics[0].error, /did not finish within/);
+    assert.equal(pics[1].status, 'done', pics[1].error);
+    assert.ok(room.messages.some((m) => m.role === 'system' && /skipped: at most 2 per turn/.test(m.text)));
+  } finally {
+    config.imagesPerTurn = keep.turn;
+    config.imageTimeoutMs = keep.timeout;
+  }
+});
+
+test('images: a member that cannot see is told so; pictures need a GMI key', async () => {
+  const mark = fake.requests.length;
+  const { id, members } = await newRoom(['Blind', 'demo/skeptic']);
+  await call('PATCH', `/api/rooms/${id}/members/${members[0].id}`, { vision: false });
+  const up = await (await fetch(`${base}/api/rooms/${id}/upload?name=a.png`, { method: 'POST', body: png(16, 16) })).json();
+  await say(id, 'What do you think of this?', { images: [up.image.id] });
+  const req = requestsFor('demo/skeptic', mark)[0];
+  assert.doesNotMatch(flat(req), /image_url/);
+  assert.match(flat(req), /New pictures: img-1\. You cannot see them\./);
+  await withOllama(
+    async () => {
+      const local = await newRoom(['Solo', 'ollama:qwen3:8b']);
+      const room = await say(local.id, '@@draw a cat');
+      assert.match(room.messages.find((m) => m.role === 'image').error, /GMI_API_KEY is not set/);
+    },
+    { key: '' }
+  );
+});
+
+test('images: a busy upstream (HTTP 500) is retried; a sync model answers the submit call directly', async () => {
+  const keep = config.imagesPerTurn;
+  config.imagesPerTurn = 4;
+  try {
+    const qmark = queue.requests.length;
+    fake.queue('demo/writer', '@@draw pic-flaky: a calm lake\n@@draw pic-sync: a quiet street');
+    const { id } = await newRoom(['Writer', 'demo/writer']);
+    const room = await say(id, 'Go.');
+    const pics = room.messages.filter((m) => m.role === 'image');
+    assert.equal(pics[0].status, 'done', pics[0].error);
+    assert.equal(pics[1].status, 'done', pics[1].error);
+    assert.equal(queue.requests.slice(qmark).filter((r) => r.model === 'pic-flaky').length, 2, 'submitted twice: the first answer was a 500');
+  } finally {
+    config.imagesPerTurn = keep;
+  }
+});
+
+test('images: members are told which image models failed last time, and why', async () => {
+  const mark = fake.requests.length;
+  fake.queue('demo/writer', '@@draw pic-fail: a lamp');
+  const { id } = await newRoom(['Writer', 'demo/writer'], ['Second', 'demo/skeptic']);
+  await say(id, 'Go.');
+  const req = requestsFor('demo/skeptic', mark)[0];
+  assert.match(flat(req), /pic-fail: new pictures[^\\n]*LAST TRY FAILED: pic-fail failed: content policy violation/);
+});
+
+test('images: prose that mentions @@draw or @@edit does not make pictures', async () => {
+  const qmark = queue.requests.length;
+  fake.queue('demo/writer', 'To ask for one, write @@draw at the start of a line.\n@@edit line: it needs an id first.\n- @@draw a list item still counts');
+  const { id } = await newRoom(['Writer', 'demo/writer']);
+  const room = await say(id, 'How do I ask for a picture? One edit line each, then one sentence.');
+  const pics = room.messages.filter((m) => m.role === 'image');
+  assert.equal(pics.length, 1);
+  assert.equal(pics[0].prompt, 'a list item still counts');
+  assert.equal(queue.requests.length, qmark + 1);
 });
 
