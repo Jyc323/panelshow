@@ -204,3 +204,19 @@ label.inline input { width: 58px; margin: 0; }
 /* local (Ollama) models */
 .member .local { font-size: 11px; padding: 0 6px; border-radius: 8px; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
 .modellist .groupname { font-size: 12px; font-weight: 600; color: #6b7280; padding: 8px 10px 4px; text-transform: none; }
+
+/* pictures */
+.msg.image .avatar { font-size: 16px; }
+.msg .pic { margin: 6px 0; }
+.msg .pic img { display: block; max-width: min(100%, 420px); max-height: 420px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); }
+.msg .pic .row { margin-top: 4px; gap: 6px; align-items: center; }
+.picid { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
+.ghost.small, a.ghost.small { font-size: 12px; padding: 2px 8px; }
+a.button { text-decoration: none; color: inherit; border: 1px solid var(--line); border-radius: 6px; }
+details.prompt { font-size: 13px; color: var(--muted); margin-top: 4px; }
+details.prompt > div { white-space: pre-wrap; color: var(--text, inherit); margin-top: 4px; }
+.thumbs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.thumbs figure { margin: 0; }
+.thumbs img { height: 96px; max-width: 160px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); display: block; }
+.thumbs figcaption { font-size: 12px; color: var(--muted); }
+.chipimg { height: 20px; width: 20px; object-fit: cover; border-radius: 3px; vertical-align: middle; }

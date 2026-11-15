@@ -25,6 +25,8 @@ const opt = (name) => env[`PANELSHOW_${name}`] ?? env[`MRT_${name}`];
 export const config = {
   apiKey: env.GMI_API_KEY || '',
   baseUrl: (env.GMI_BASE_URL || 'https://api.gmi-serving.com/v1').replace(/\/+$/, ''),
+  // GMI's request queue: image (and video) models live here, not in /v1/models.
+  queueUrl: (env.GMI_QUEUE_URL || 'https://console.gmicloud.ai/api/v1/ie/requestqueue/apikey').replace(/\/+$/, ''),
   port: Number(env.PORT || 8790),
   host: env.HOST || '127.0.0.1',
   dataDir: path.resolve(opt('DATA_DIR') || path.join(ROOT, 'data')),
@@ -38,6 +40,13 @@ export const config = {
   ollamaUrl: ['off', 'none', '0'].includes(String(opt('OLLAMA_URL') || '').toLowerCase()) ? '' : (opt('OLLAMA_URL') || 'http://127.0.0.1:11434').replace(/\/+$/, ''),
   ollamaNumCtx: Number(opt('OLLAMA_NUM_CTX') || 16384), // context window per local request (prompt + reply)
   ollamaConcurrency: Number(opt('OLLAMA_CONCURRENCY') || 1), // local requests at the same time
+
+  // Image generation (GMI request queue). Members ask for images with @@draw / @@edit lines.
+  defaultImageModel: opt('IMAGE_MODEL') || '', // used when a member names no model; empty = seedream-5.0-lite if available
+  imagesPerRun: Number(opt('IMAGES_PER_RUN') || 8), // safety cap against loops; how many to make is decided in the chat
+  imagesPerTurn: Number(opt('IMAGES_PER_TURN') || 4),
+  imageTimeoutMs: Number(opt('IMAGE_TIMEOUT_MS') || 300000),
+  imagePollMs: Number(opt('IMAGE_POLL_MS') || 3000),
 
   // Context budgets (characters, not tokens).
   transcriptChars: 60000,

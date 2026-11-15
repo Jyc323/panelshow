@@ -168,11 +168,55 @@ function Verdict({ v, members }) {
   </div>`;
 }
 
+const imageUrl = (roomId, id, download) => `/api/rooms/${roomId}/images/${id}${download ? '?download=1' : ''}`;
+
+/** A picture made with @@draw / @@edit: progress, then the picture with its id, model and prompt. */
+function ImageMessage({ m, members, roomId, onEdit }) {
+  // Count the seconds here: a "sync" image model sends no progress while it works.
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (m.status !== 'generating') return undefined;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [m.status]);
+  const elapsed = Math.max(0, Math.round((Date.now() - m.at) / 1000));
+  // When the picture arrives the card grows: stay at the bottom if the reader was there.
+  const keepBottom = (e) => {
+    const t = e.target.closest('.thread');
+    if (t && t.scrollHeight - t.scrollTop - t.clientHeight < e.target.clientHeight + 200) t.scrollTop = t.scrollHeight;
+  };
+  const member = members.find((x) => x.id === m.memberId);
+  const color = m.memberId ? (member && member.color) || '#888' : 'var(--host)';
+  return html`<div class="msg image">
+    <div class="avatar" style=${`background:${color}`}>🎨</div>
+    <div class="bubble">
+      <div class="meta">
+        <b style=${`color:${color}`}>${m.name}</b>
+        <span class="muted">${m.action === 'edit' ? 'edited' : 'drew'}${m.refs && m.refs.length ? ` ${m.refs.join(', ')}` : ''} with ${m.model || 'an image model'}</span>
+        ${m.status === 'generating' ? html`<span class="live">${m.progress || 'working'}… ${elapsed} s</span>` : ''}
+        ${m.status === 'stopped' ? html`<span class="muted">stopped</span>` : ''}
+        ${m.status === 'done' && m.seconds ? html`<span class="muted">${m.seconds} s</span>` : ''}
+      </div>
+      ${(m.images || []).map((id) => html`<div class="pic">
+        <a href=${imageUrl(roomId, id)} target="_blank" rel="noopener"><img src=${imageUrl(roomId, id)} alt=${`${id}: ${m.prompt}`} onLoad=${keepBottom} /></a>
+        <div class="row tight">
+          <span class="picid">${id}</span>
+          <button class="ghost small" onClick=${() => onEdit(id)} title="Put @@edit ${id} in the message box">Edit</button>
+          <a class="ghost small button" href=${imageUrl(roomId, id, true)}>Download</a>
+        </div>
+      </div>`)}
+      ${m.prompt ? html`<details class="prompt" open=${m.status !== 'done'}><summary>Prompt${m.aspect ? ` · ${m.aspect}` : ''}</summary><div>${m.prompt}</div></details>` : ''}
+      ${m.error ? html`<div class="error">${m.error}</div>` : ''}
+    </div>
+  </div>`;
+}
+
 class Message extends Component {
   shouldComponentUpdate(next) {
     return next.m !== this.props.m || next.members !== this.props.members;
   }
-  render({ m, members }) {
+  render({ m, members, roomId, onEdit }) {
+    if (m.role === 'image') return html`<${ImageMessage} m=${m} members=${members} roomId=${roomId} onEdit=${onEdit} />`;
     if (m.kind === 'verdict') return html`<div class="msg system"><${Verdict} v=${m.verdict} members=${members} /></div>`;
     const member = members.find((x) => x.id === m.memberId);
     const color = m.role === 'host' ? 'var(--host)' : (member && member.color) || '#888';
@@ -197,6 +241,7 @@ class Message extends Component {
               : html`<${FileCard} path=${s.path} content=${s.content} saved=${(m.files || [])[fileIndex++]} />`
         )}
         ${m.role === 'host' && m.files && m.files.length ? html`<div class="chips">${m.files.map((f) => html`<span class="chip">📎 ${f.path}</span>`)}</div>` : ''}
+        ${m.images && m.images.length ? html`<div class="thumbs">${m.images.map((id) => html`<figure><a href=${imageUrl(roomId, id)} target="_blank" rel="noopener"><img src=${imageUrl(roomId, id)} alt=${id} loading="lazy" /></a><figcaption>${id} <button class="link" onClick=${() => onEdit(id)}>Edit</button></figcaption></figure>`)}</div>` : ''}
         ${m.tools && m.tools.length
           ? html`<div class="chips">${m.tools.map((t) => html`<span class=${'chip' + (t.ok ? '' : ' bad')} title=${t.error || t.arg}>${t.ok ? '✓' : '✗'} ${{ read: 'read', open: 'opened', search: 'searched', list: 'listed' }[t.type] || t.type} ${t.type === 'open' ? t.title || hostOf(t.arg) : t.arg}${t.ok ? '' : `: ${t.error}`}</span>`)}</div>`
           : ''}
@@ -604,6 +649,7 @@ function App() {
         setRooms((list) => list.map((x) => (x.id === ev.room.id ? { ...x, title: ev.room.title, members: ev.room.members.length } : x)));
       }
       else if (ev.type === 'files') setRoom((r) => (r ? { ...r, files: ev.files } : r));
+      else if (ev.type === 'images') setRoom((r) => (r ? { ...r, images: ev.images } : r));
       else if (ev.type === 'message')
         setRoom((r) => {
           if (!r) return r;
@@ -657,15 +703,20 @@ function App() {
   const sendMessage = () => {
     if (!text.trim() || running) return;
     stick.current = true;
-    api('POST', `/api/rooms/${roomId}/send`, { text, mode, rounds, maxHops: hops, attachments: pending.map((f) => f.path) }).then(() => {
+    api('POST', `/api/rooms/${roomId}/send`, { text, mode, rounds, maxHops: hops, attachments: pending.filter((f) => f.path).map((f) => f.path), images: pending.filter((f) => f.image).map((f) => f.image.id) }).then(() => {
       setText('');
       setPending([]);
     }, (e) => fail(e.message));
   };
+  // "Edit" on a picture: start an @@edit line for it in the message box.
+  const editImage = (id) => {
+    setText((t) => `${t && !t.endsWith('\n') ? `${t}\n` : t}@@edit ${id} `);
+    setTimeout(() => document.querySelector('footer.composer textarea')?.focus(), 0);
+  };
   const upload = async (files) => {
     for (const f of files) {
       try {
-        const entry = await api('POST', `/api/rooms/${roomId}/upload?name=${encodeURIComponent(f.name)}`, f);
+        const entry = await api('POST', `/api/rooms/${roomId}/upload?name=${encodeURIComponent(f.name || 'pasted.png')}`, f);
         setPending((p) => [...p, entry]);
       } catch (e) {
         fail(e.message);
@@ -719,7 +770,7 @@ function App() {
               <div class="thread" ref=${thread} onScroll=${(e) => (stick.current = e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight < 80)}>
                 ${!room.members.length ? html`<div class="hint">Invite one or more models to start. <button class="link" onClick=${() => setDialog({ type: 'invite' })}>Invite models</button></div>` : ''}
                 ${room.members.length && !room.messages.length ? html`<div class="hint">Write a message below. Paste links, attach files or share a project folder (📁 Files) and the members can read them. Mention <b>@Name</b> to address only some members.</div>` : ''}
-                ${room.messages.map((m) => html`<${Message} key=${m.id} m=${m} members=${room.members} />`)}
+                ${room.messages.map((m) => html`<${Message} key=${m.id} m=${m} members=${room.members} roomId=${room.id} onEdit=${editImage} />`)}
               </div>
               ${showFiles
                 ? html`<aside class="files">
@@ -732,13 +783,16 @@ function App() {
             </div>
 
             <footer class="composer">
-              ${pending.length ? html`<div class="chips">${pending.map((f) => html`<span class="chip">📎 ${f.path} <button class="link" onClick=${() => setPending(pending.filter((x) => x !== f))}>✕</button></span>`)}</div>` : ''}
+              ${pending.length ? html`<div class="chips">${pending.map((f) => html`<span class="chip">${f.image ? html`<img class="chipimg" src=${imageUrl(room.id, f.image.id)} alt="" /> ${f.image.id}` : html`📎 ${f.path}`} <button class="link" onClick=${() => setPending(pending.filter((x) => x !== f))}>✕</button></span>`)}</div>` : ''}
               <textarea rows="3" placeholder=${!room.members.length ? 'Invite a model first' : mode === 'relay' ? 'Message the room…  @Name picks who starts · @all asks everyone at once · @Skeptic asks a role' : 'Message the room…  (Enter to send, Shift+Enter for a new line · @Name or @Role to address some members)'} value=${text}
                 onInput=${(e) => setText(e.target.value)}
-                onKeyDown=${(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMessage(); } }}></textarea>
+                onKeyDown=${(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMessage(); } }}
+                onPaste=${(e) => { const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/')); if (files.length) { e.preventDefault(); upload(files); } }}
+                onDragOver=${(e) => e.preventDefault()}
+                onDrop=${(e) => { const files = [...(e.dataTransfer?.files || [])]; if (files.length) { e.preventDefault(); upload(files); } }}></textarea>
               <div class="row">
                 <input type="file" multiple hidden ref=${fileInput} onChange=${(e) => { upload([...e.target.files]); e.target.value = ''; }} />
-                <button class="ghost" onClick=${() => fileInput.current.click()} title="Attach text, PDF or Word files">📎 Attach</button>
+                <button class="ghost" onClick=${() => fileInput.current.click()} title="Attach files or pictures: text, PDF, Word, PNG, JPEG, WebP, GIF. You can also paste or drop a picture into the message box.">📎 Attach</button>
                 <select value=${mode} onChange=${(e) => setMode(e.target.value)} title="How the members take turns">
                   <option value="roundtable">Roundtable: in order, seeing each other</option>
                   <option value="parallel">Parallel: at once, not seeing each other</option>

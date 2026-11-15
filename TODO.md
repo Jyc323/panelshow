@@ -19,9 +19,11 @@ What is planned next. Ideas and pull requests are welcome.
 - [ ] Judges open the links and files a reply cites
 
 ## Media
-- [ ] Images and 3D models as attachments
+- [ ] 3D models as attachments
 - [ ] Frames and sound from YouTube / Bilibili videos
-- [ ] Members that generate images or video for the others to critique
+- [ ] Members that generate video for the others to critique
+- [ ] Blind judge for pictures: judges score images without knowing which member or model made them
+- [ ] Image generation with local models
 
 ## Cost and sharing
 - [ ] Costs in dollars and a spending cap per room
