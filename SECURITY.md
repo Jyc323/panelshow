@@ -9,6 +9,7 @@ PanelShow runs on your own computer and holds your API key, and it can share pro
 
 ## What it does not protect against
 - **Anything a model reads is sent to the model provider:** GMI Cloud for cloud models, or your Ollama server for local models. Share only code and files you are allowed to send.
+- **Web search, when you turn it on, sends search words to the search provider** you set in `.env`. Members choose the words, so they may include details from the discussion.
 - **Redaction is best effort.** Use `.gitignore` or `.panelshowignore` to leave out files that must not be read.
 - **Other programs on your computer** can call the local API, like any local app.
 - **Text in pages and files can try to steer a model** (prompt injection). Members are told it is material, not instructions; this lowers the risk, it does not remove it.

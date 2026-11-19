@@ -15,7 +15,6 @@ What is planned next. Ideas and pull requests are welcome.
 - [ ] One-click presets: Council, Critique, Debate
 - [ ] Add a member in the middle of a chat ("someone who knows X")
 - [ ] Summarise old messages instead of dropping them in long chats
-- [ ] Web search for members
 - [ ] Judges open the links and files a reply cites
 
 ## Media

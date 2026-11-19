@@ -117,7 +117,23 @@ PanelShow never writes to a shared folder. The following are never shown to mode
 
 - Links in a message are opened on the server. Web pages are reduced to their main text, and members that accept images also get up to 3 pictures. PDF and Word documents are converted to text. A direct video link becomes one contact sheet of 12 frames (requires ffmpeg). For YouTube links, the title, description and captions are read.
 - You can attach text, PDF or Word files, or pictures, to a message.
-- Members can write reports, code and data into a shared file area, and request more material with `@@read filename` or `@@open url`.
+- Members can write reports, code and data into a shared file area, and request more material with `@@read filename` or `@@open url`, or with `@@web search words` when web search is on.
+
+### Web search (optional, off by default)
+
+Members can search the web with a line like `@@web autonomous driving VLM robustness benchmark`. They get the top 5 results (title, address, snippet), open the pages they need with `@@open`, and are told to cite the address of every fact taken from the web. A member decides when to search, at most 2 times per turn.
+
+Turn it on in `.env`:
+
+| Provider | Setting | Key |
+|---|---|---|
+| [Firecrawl](https://www.firecrawl.dev/) | `PANELSHOW_SEARCH=on` | None needed; free within a limit per IP address. A key (`PANELSHOW_SEARCH_KEY`) raises the limit |
+| [Tavily](https://www.tavily.com/) | `PANELSHOW_SEARCH=tavily` | Free key, no card |
+| [Exa](https://exa.ai/) | `PANELSHOW_SEARCH=exa` | Free key, no card |
+| [Ollama web search](https://docs.ollama.com/capabilities/web-search) | `PANELSHOW_SEARCH=ollama` | Free Ollama account key |
+| [SearXNG](https://docs.searxng.org/) (your own instance) | `PANELSHOW_SEARCH=searxng` and `PANELSHOW_SEARCH_URL=http://…` | None; the JSON format must be enabled in its `settings.yml` |
+
+Search words are sent to the provider you choose. The sidebar shows which provider is in use.
 
 ### Pictures: critique, draw and edit in the chat
 
@@ -182,10 +198,14 @@ Only the API key is required. Everything else is optional and goes in `.env` (se
 | `PANELSHOW_IMAGES_PER_RUN` | `8` | Maximum pictures made per message you send |
 | `PANELSHOW_IMAGES_PER_TURN` | `4` | Maximum pictures per reply |
 | `PANELSHOW_IMAGE_TIMEOUT_MS` | `300000` | How long to wait for one picture |
+| `PANELSHOW_SEARCH` | off | Web search for members: `on` (Firecrawl, no key), `firecrawl`, `tavily`, `exa`, `ollama` or `searxng` |
+| `PANELSHOW_SEARCH_KEY` | | Key for the search provider (or its usual variable, such as `TAVILY_API_KEY`) |
+| `PANELSHOW_SEARCH_URL` | | Address of your SearXNG instance |
+| `PANELSHOW_SEARCHES_PER_TURN` | `2` | Maximum web searches per reply |
 
 ## Cost
 
-Each reply is one billed request. Before you send a message, the composer shows how many requests it will trigger. The session in the GIF used 13 requests (8 replies and 5 judges), plus 1 planning request for Smart invite. The first time Smart invite uses a model, it also sends two very small test requests; the results are cached and not repeated. Local models through Ollama cost nothing per request, and are checked by asking Ollama about the model instead of sending test requests. Pictures are billed per picture by GMI Cloud; the price depends on the model (about $0.01 to $0.20 per picture at the time of writing) and is shown to members in the model list.
+Each reply is one billed request. Before you send a message, the composer shows how many requests it will trigger. The session in the GIF used 13 requests (8 replies and 5 judges), plus 1 planning request for Smart invite. The first time Smart invite uses a model, it also sends two very small test requests; the results are cached and not repeated. Local models through Ollama cost nothing per request, and are checked by asking Ollama about the model instead of sending test requests. Pictures are billed per picture by GMI Cloud; the price depends on the model (about $0.01 to $0.20 per picture at the time of writing) and is shown to members in the model list. Web search is off by default; the providers listed above have free allowances.
 
 ## Security and privacy
 
@@ -195,7 +215,8 @@ Each reply is one billed request. Before you send a message, the composer shows 
 - Shared folders are read-only. Only files in the scan list can be read; reads do not follow symbolic links and confirm that the opened file is the one the scan found; a folder that is moved or replaced stops being shared. Hard-linked files and files or directories with secret-like names are skipped, and dependencies, binaries and anything excluded by ignore rules are not shared. Credential-like values are redacted, in uploaded files too. Note that what members read is still sent to the model provider, so share only code you are allowed to send.
 - Text from web pages and files is given to members as reference material, explicitly marked as not being instructions. This reduces the risk of page content steering a model, but cannot rule it out.
 - Files written by members are shown as plain text and never run as web pages.
-- Requests to local models go only to the Ollama address set in `.env`; the browser cannot change it. When every member is local, what members read is sent only to that Ollama server.
+- Requests to local models go only to the Ollama address set in `.env`; the browser cannot change it. When every member is local, what members read is sent only to that Ollama server, unless web search is on: search words then go to the search provider.
+- Web search sends only the search words, to the provider set in `.env`. Results are given to members as reference material, and members open pages through the same public-address checks as `@@open`.
 - To edit a picture, PanelShow uploads it through GMI Cloud's upload route, which gives it a public URL that the image model fetches. Do not ask for edits of pictures that must stay private. Pictures are kept in the room's folder under `data/`.
 
 See [SECURITY.md](SECURITY.md) for the scope of these protections and how to report a security issue.
@@ -210,18 +231,18 @@ See [SECURITY.md](SECURITY.md) for the scope of these protections and how to rep
 - [ ] Share a discussion as a read-only page; export a verdict card as an image
 - [ ] Members propose changes to a shared folder as diffs, which you choose whether to apply
 - [ ] Sandboxed preview of member-written HTML; members edit each other's files with version history
-- [ ] Web search for members; speech-to-text for video
+- [ ] Speech-to-text for video
 
 Full roadmap: [TODO.md](TODO.md). Issues and pull requests are welcome.
 
 ## Development
 
 ```bash
-npm test     # 46 end-to-end tests against stand-in GMI (chat and image) and Ollama servers: no API key, no network
+npm test     # 54 end-to-end tests against stand-in GMI (chat and image), Ollama and web search servers: no API key, no network
 npm run demo # run the full app with stand-in models
 ```
 
-`server/` is the Node server: `llm.js` routes each model call to GMI Cloud (`gmi.js`) or Ollama (`ollama.js`), `orchestrator.js` schedules turns, `casting.js` handles Smart invite, `judge.js` runs the blind judge, `workspace.js` manages read-only project folders, `images.js` lists GMI image models and runs picture jobs, and `roomImages.js` stores each room's pictures. `web/` is the frontend page, built with Preact + htm and no build step.
+`server/` is the Node server: `llm.js` routes each model call to GMI Cloud (`gmi.js`) or Ollama (`ollama.js`), `orchestrator.js` schedules turns, `casting.js` handles Smart invite, `judge.js` runs the blind judge, `workspace.js` manages read-only project folders, `images.js` lists GMI image models and runs picture jobs, `roomImages.js` stores each room's pictures, and `search.js` runs web searches. `web/` is the frontend page, built with Preact + htm and no build step.
 
 ## Credits
 

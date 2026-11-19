@@ -14,6 +14,7 @@ import { saveUpload, readFileText, rawFilePath } from './files.js';
 import { extractDocText, cachedAsset } from './resources.js';
 import { contextText } from './prompt.js';
 import { hasFfmpeg } from './media.js';
+import { searchStatus } from './search.js';
 import { suggestMembers, planCost, PROBE_VERSION, MAX_MEMBERS } from './casting.js';
 import { checkFolder, folderSummary, scanFolder, renderTree, treeHeader, readFolderRaw } from './workspace.js';
 
@@ -91,7 +92,7 @@ async function api(req, res, url) {
   const method = req.method;
   const is = (m, ...pattern) => method === m && seg.length === pattern.length && pattern.every((p, i) => p === '*' || p === seg[i]);
 
-  if (is('GET', 'health')) return send(res, 200, { ok: true, hasKey: Boolean(config.apiKey), providers: await providers(), ffmpeg: await hasFfmpeg(), baseUrl: config.baseUrl, rubrics: RUBRICS });
+  if (is('GET', 'health')) return send(res, 200, { ok: true, hasKey: Boolean(config.apiKey), providers: await providers(), ffmpeg: await hasFfmpeg(), search: searchStatus(), baseUrl: config.baseUrl, rubrics: RUBRICS });
 
   if (is('GET', 'models')) {
     try {
@@ -380,6 +381,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.log(`PanelShow is running at http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`);
     if (!config.apiKey) console.log('GMI_API_KEY is not set: GMI Cloud models are off. Local models from Ollama still work if Ollama is running.');
     if (config.ollamaUrl) console.log(`Local models: looking for Ollama at ${config.ollamaUrl}`);
+    const web = searchStatus();
+    if (web.enabled) console.log(`Web search for members: ${web.name}${web.keyless ? ' (no key)' : ''}. Search words are sent to ${web.host}.`);
+    else if (web.error) console.log(`Web search is off: ${web.error}`);
     if (config.apiKey) imageCatalog().catch(() => {}); // load the image model list in the background
   });
 }

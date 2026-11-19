@@ -20,12 +20,13 @@ import { probeModel } from '../server/llm.js';
 import { toOllamaMessages } from '../server/ollama.js';
 import { createFakeOllama } from './fake-ollama.js';
 import { createFakeQueue } from './fake-queue.js';
+import { createFakeSearch } from './fake-search.js';
 import { buildPayload } from '../server/images.js';
 import { describeModel, buildShortlist, fillByRules, validatePicks } from '../server/casting.js';
 import { resolveTarget, redactSecrets } from '../server/workspace.js';
 
 const KEY = 'test-key-SECRET-123';
-let fake, ollama, queue, app, base, site, siteUrl;
+let fake, ollama, queue, search, app, base, site, siteUrl;
 
 // A noisy PNG large enough to count as a real picture.
 function png(w = 64, h = 64) {
@@ -63,6 +64,9 @@ test.before(async () => {
   fake = await createFakeGmi();
   ollama = await createFakeOllama();
   queue = await createFakeQueue();
+  search = await createFakeSearch();
+  config.search = ''; // web search: off unless a test turns it on, never a real provider
+  for (const k of ['FIRECRAWL_API_KEY', 'TAVILY_API_KEY', 'EXA_API_KEY', 'OLLAMA_API_KEY']) delete process.env[k]; // a key in the shell must not change the tests
   config.baseUrl = fake.url;
   config.queueUrl = queue.url; // image models: never the real GMI queue in tests
   config.imagePollMs = 10;
@@ -97,6 +101,7 @@ test.after(async () => {
   await fake.close();
   await ollama.close();
   await queue.close();
+  await search.close();
   await new Promise((r) => app.close(r));
   await new Promise((r) => site.close(r));
 });
@@ -1001,3 +1006,119 @@ test('images: prose that mentions @@draw or @@edit does not make pictures', asyn
   assert.equal(queue.requests.length, qmark + 1);
 });
 
+// ---- Web search (@@web) ----
+
+async function withSearch(settings, fn) {
+  const saved = { search: config.search, searchKey: config.searchKey, searchUrl: config.searchUrl, searchesPerTurn: config.searchesPerTurn };
+  Object.assign(config, { searchUrl: search.url, searchKey: '', searchesPerTurn: 2 }, settings);
+  try {
+    return await fn();
+  } finally {
+    Object.assign(config, saved);
+  }
+}
+
+test('web search is off by default: members are told so and @@web sends nothing', async () => {
+  const mark = fake.requests.length;
+  const before = search.requests.length;
+  const { id } = await newRoom(['Opti', 'demo/optimist']);
+  fake.queue('demo/optimist', 'Let me look.\n@@web drivebench vlm', 'I could not search, so here is my view from memory.');
+  const room = await say(id, 'What is new in driving VLM benchmarks?');
+  const msg = room.messages.find((m) => m.role === 'member');
+  assert.equal(search.requests.length, before);
+  assert.equal(msg.tools[0].type, 'web');
+  assert.equal(msg.tools[0].ok, false);
+  assert.match(msg.tools[0].error, /web search is off/);
+  const first = requestsFor('demo/optimist', mark)[0];
+  assert.match(first.body.messages[0].content, /You cannot search the web/);
+  assert.match(flat(requestsFor('demo/optimist', mark)[1]), /You have NOT seen any search results/);
+  assert.equal((await call('GET', '/api/health')).json.search.enabled, false);
+});
+
+test('web search with Firecrawl and no key: results reach the member as reference material', async () => {
+  await withSearch({ search: 'on' }, async () => {
+    const mark = fake.requests.length;
+    const before = search.requests.length;
+    const { id } = await newRoom(['Opti', 'demo/optimist']);
+    fake.queue('demo/optimist', 'Let me check.\n@@web driving VLM robustness', (body) => (JSON.stringify(body.messages).includes('https://example.org/nuscenes-c') ? 'Found nuScenes-C (https://example.org/nuscenes-c).' : 'No results seen.'));
+    const room = await say(id, 'What is new in driving VLM benchmarks?');
+    const msg = room.messages.find((m) => m.role === 'member');
+    const sent = search.requests.slice(before);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].provider, 'firecrawl');
+    assert.equal(sent[0].auth, '', 'keyless: no Authorization header');
+    assert.deepEqual(sent[0].body, { query: 'driving VLM robustness', limit: 5 });
+    assert.match(msg.text, /Found nuScenes-C/);
+    assert.deepEqual([msg.tools[0].type, msg.tools[0].ok, msg.tools[0].title], ['web', true, '2 results']);
+    const [first, second] = requestsFor('demo/optimist', mark);
+    assert.match(first.body.messages[0].content, /@@web/);
+    const seen = flat(second);
+    assert.match(seen, /web search \\"driving VLM robustness\\"/);
+    assert.match(seen, /open a page with @@open before you rely on it/);
+    assert.ok(!seen.includes('javascript:') && !seen.includes('<b>'), 'bad links and markup are dropped');
+    assert.equal((seen.match(/example\.org\/drivebench/g) || []).length, 1, 'duplicates are dropped');
+    assert.ok(!contextText(msg.text).includes('@@web'), 'others see the reply without the request line');
+    const h = (await call('GET', '/api/health')).json.search;
+    assert.deepEqual([h.enabled, h.provider, h.keyless], [true, 'firecrawl', true]);
+  });
+});
+
+test('web search: at most two searches per turn', async () => {
+  await withSearch({ search: 'firecrawl' }, async () => {
+    const before = search.requests.length;
+    const { id } = await newRoom(['Opti', 'demo/optimist']);
+    fake.queue('demo/optimist', '@@web one\n@@web two\n@@web three', 'Done.');
+    const room = await say(id, 'Search a lot.');
+    const msg = room.messages.find((m) => m.role === 'member');
+    assert.equal(search.requests.length - before, 2);
+    assert.deepEqual(msg.tools.map((t) => t.ok), [true, true, false]);
+    assert.match(msg.tools[2].error, /used the 2 web searches allowed this turn/);
+  });
+});
+
+test('web search providers: each request and answer shape, and keys stay out of results', async () => {
+  const { webSearch, searchStatus } = await import('../server/search.js');
+  for (const [provider, check] of [
+    ['tavily', (r) => assert.equal(r.auth, 'Bearer sk-test-123')],
+    ['exa', (r) => assert.equal(r.xkey, 'sk-test-123')],
+    ['ollama', (r) => assert.equal(r.auth, 'Bearer sk-test-123')],
+    ['searxng', (r) => assert.deepEqual([r.method, r.query.format, r.query.q], ['GET', 'json', 'fog dropout'])],
+    ['firecrawl', (r) => assert.equal(r.auth, 'Bearer sk-test-123')],
+  ]) {
+    await withSearch({ search: provider, searchKey: 'sk-test-123' }, async () => {
+      const before = search.requests.length;
+      const r = await webSearch('fog dropout');
+      assert.equal(r.ok, true, `${provider}: ${r.error}`);
+      assert.deepEqual(r.results.map((x) => x.url), ['https://example.org/drivebench', 'https://example.org/nuscenes-c']);
+      assert.ok(r.results[1].snippet.includes('dropout') && !r.results[1].snippet.includes('<b>'));
+      const req = search.requests.slice(before);
+      assert.equal(req.length, 1);
+      assert.equal(req[0].provider, provider);
+      check(req[0]);
+      assert.ok(!JSON.stringify(r).includes('sk-test-123'));
+      assert.ok(!JSON.stringify(searchStatus()).includes('sk-test-123'));
+    });
+  }
+  await withSearch({ search: 'tavily' }, async () => {
+    assert.match(searchStatus().error, /Tavily needs a key/);
+    assert.match((await webSearch('x')).error, /Tavily needs a key/);
+  });
+  await withSearch({ search: 'searxng', searchUrl: '' }, async () => assert.match(searchStatus().error, /PANELSHOW_SEARCH_URL/));
+  await withSearch({ search: 'bing' }, async () => assert.match(searchStatus().error, /Unknown search provider "bing"/));
+});
+
+test('web search errors: rate limit and gateway pages are reported readably', async () => {
+  const { webSearch } = await import('../server/search.js');
+  await withSearch({ search: 'on' }, async () => {
+    search.fail(429);
+    const a = await webSearch('anything');
+    assert.equal(a.ok, false);
+    assert.match(a.error, /^Firecrawl 429: Rate limit exceeded \(search limit reached/);
+    search.fail(520, '<!DOCTYPE html><html><head><title>api | 520: Web server is returning an unknown error</title></head><body>x</body></html>', 'text/html');
+    const b = await webSearch('anything');
+    assert.match(b.error, /^Firecrawl 520: api \| 520: Web server is returning an unknown error/);
+    assert.ok(!b.error.includes('<'));
+    const c = await webSearch('nothing at all');
+    assert.deepEqual([c.ok, c.results.length], [true, 0]);
+  });
+});

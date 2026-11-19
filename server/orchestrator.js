@@ -129,7 +129,14 @@ export async function memberTurn(room, member, ctl, { visible, note = '', round 
         emit(room, { type: 'message', message: msg });
         continue;
       }
-      const items = requests.map((q) => (q.type === 'read' ? { kind: 'file', path: q.arg } : q.type === 'open' ? { kind: 'url', url: q.arg } : { kind: q.type, arg: q.arg }));
+      // Web searches have their own limit per turn (they use the Host's search quota).
+      let webLeft = config.searchesPerTurn - msg.tools.filter((t) => t.type === 'web').length;
+      const items = requests.map((q) => {
+        if (q.type === 'read') return { kind: 'file', path: q.arg };
+        if (q.type === 'open') return { kind: 'url', url: q.arg };
+        if (q.type === 'web' && webLeft-- <= 0) return { kind: 'web', arg: q.arg, denied: `you have used the ${config.searchesPerTurn} web searches allowed this turn` };
+        return { kind: q.type, arg: q.arg };
+      });
       const rendered = await renderResources(room, items, { vision, signal: ctl.signal });
       requests.forEach((q, i) => {
         const res = rendered.results[i];

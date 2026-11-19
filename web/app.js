@@ -243,7 +243,7 @@ class Message extends Component {
         ${m.role === 'host' && m.files && m.files.length ? html`<div class="chips">${m.files.map((f) => html`<span class="chip">📎 ${f.path}</span>`)}</div>` : ''}
         ${m.images && m.images.length ? html`<div class="thumbs">${m.images.map((id) => html`<figure><a href=${imageUrl(roomId, id)} target="_blank" rel="noopener"><img src=${imageUrl(roomId, id)} alt=${id} loading="lazy" /></a><figcaption>${id} <button class="link" onClick=${() => onEdit(id)}>Edit</button></figcaption></figure>`)}</div>` : ''}
         ${m.tools && m.tools.length
-          ? html`<div class="chips">${m.tools.map((t) => html`<span class=${'chip' + (t.ok ? '' : ' bad')} title=${t.error || t.arg}>${t.ok ? '✓' : '✗'} ${{ read: 'read', open: 'opened', search: 'searched', list: 'listed' }[t.type] || t.type} ${t.type === 'open' ? t.title || hostOf(t.arg) : t.arg}${t.ok ? '' : `: ${t.error}`}</span>`)}</div>`
+          ? html`<div class="chips">${m.tools.map((t) => html`<span class=${'chip' + (t.ok ? '' : ' bad')} title=${t.error || t.arg}>${t.ok ? '✓' : '✗'} ${{ read: 'read', open: 'opened', search: 'searched', list: 'listed', web: 'searched the web for' }[t.type] || t.type} ${t.type === 'open' ? t.title || hostOf(t.arg) : t.type === 'web' ? `“${t.arg}”${t.ok && t.title ? ` (${t.title})` : ''}` : t.arg}${t.ok ? '' : `: ${t.error}`}</span>`)}</div>`
           : ''}
         <${Refs} refs=${m.refs} />
         ${(m.notes || []).map((n) => html`<div class="note">${n}</div>`)}
@@ -736,7 +736,7 @@ function App() {
         ${!rooms.length ? html`<div class="muted pad">No rooms yet.</div>` : ''}
       </nav>
       <div class="sidefoot muted">
-        ${health ? html`<div>API: ${health.hasKey ? hostOf(health.baseUrl) : 'GMI Cloud off (no key)'}</div>${ollama && ollama.enabled ? html`<div>Ollama: ${ollama.reachable ? `${ollama.models} local model${ollama.models === 1 ? '' : 's'}` : 'not running'}</div>` : ''}<div>${health.ffmpeg ? 'ffmpeg found: images and video frames are prepared' : 'ffmpeg not found: video frames are skipped'}</div>` : ''}
+        ${health ? html`<div>API: ${health.hasKey ? hostOf(health.baseUrl) : 'GMI Cloud off (no key)'}</div>${ollama && ollama.enabled ? html`<div>Ollama: ${ollama.reachable ? `${ollama.models} local model${ollama.models === 1 ? '' : 's'}` : 'not running'}</div>` : ''}<div>${health.ffmpeg ? 'ffmpeg found: images and video frames are prepared' : 'ffmpeg not found: video frames are skipped'}</div>${health.search && health.search.enabled ? html`<div>Web search: ${health.search.name}${health.search.keyless ? ' (no key)' : ''}</div>` : health.search && health.search.error ? html`<div title=${health.search.error}>Web search: not working (see .env)</div>` : ''}` : ''}
       </div>
     </aside>
 

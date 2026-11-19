@@ -48,6 +48,13 @@ export const config = {
   imagesPerTurn: Number(opt('IMAGES_PER_TURN') || 4),
   imageTimeoutMs: Number(opt('IMAGE_TIMEOUT_MS') || 300000),
   imagePollMs: Number(opt('IMAGE_POLL_MS') || 3000),
+  // Web search for members (@@web): off unless a provider is named. "on" = Firecrawl without a key.
+  search: opt('SEARCH') || '',
+  searchKey: opt('SEARCH_KEY') || '',
+  searchUrl: opt('SEARCH_URL') || '', // your SearXNG instance, or another address for the provider
+  searchesPerTurn: Number(opt('SEARCHES_PER_TURN') || 2),
+  searchResults: 5,
+  searchTimeoutMs: 20000,
 
   // Context budgets (characters, not tokens).
   transcriptChars: 60000,
