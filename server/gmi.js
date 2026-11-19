@@ -17,9 +17,39 @@ function headers() {
   return { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
 }
 
-async function errorFrom(res) {
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", nbsp: ' ' };
+
+/**
+ * Gateways (Cloudflare) answer some failures with a whole HTML page. Keep its title, not the markup.
+ * Other text is returned unchanged.
+ */
+export function readableBody(raw) {
+  const s = String(raw || '');
+  if (!/^\s*<(!doctype\s+html|html)\b/i.test(s)) return s;
+  const title = (s.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1];
+  const text = (title || s.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' '))
+    .replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_, k) => ENTITIES[k])
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200);
+  return `${text || 'unknown error'} (an error page from GMI's gateway, not an answer from the model)`;
+}
+
+/** Answers worth trying again: rate limits, server errors and gateway errors (Cloudflare 520–530). */
+export const isTransient = (status) => status === 429 || (status >= 500 && status <= 504) || (status >= 520 && status <= 530);
+
+export const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  if (signal?.aborted) return reject(signal.reason || new Error('aborted'));
+  const t = setTimeout(resolve, ms);
+  signal?.addEventListener('abort', () => {
+    clearTimeout(t);
+    reject(signal.reason || new Error('aborted'));
+  }, { once: true });
+});
+
+async function errorFrom(res, tries = 1) {
   const raw = await res.text().catch(() => '');
-  let detail = raw;
+  let detail = readableBody(raw);
   try {
     const j = JSON.parse(raw);
     const e = j.error && typeof j.error === 'object' ? j.error : j;
@@ -30,7 +60,8 @@ async function errorFrom(res) {
   } catch {
     /* not JSON: keep the raw body */
   }
-  return new GmiError(`GMI ${res.status}: ${String(detail).slice(0, 1500) || res.statusText}`, res.status);
+  const after = tries > 1 ? ` Tried ${tries} times; this is usually temporary, so send the message again in a minute.` : '';
+  return new GmiError(`GMI ${res.status}: ${String(detail).slice(0, 1500) || res.statusText}${after}`, res.status);
 }
 
 /** A timeout is reported as such (not as "Unexpected error"); a stop by the Host stays an abort. */
@@ -70,9 +101,29 @@ export async function chat({ model, messages, signal, onDelta, onThinking, maxTo
   const body = { model, messages, stream: true, max_tokens: maxTokens || config.maxTokens };
   if (streamUsageSupported) body.stream_options = { include_usage: true };
   const sig = withTimeout(signal);
-  let res = await fetch(`${config.baseUrl}/chat/completions`, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal: sig }).catch((e) => {
-    throw timeoutError(e, signal);
-  });
+  // Nothing has been streamed yet, so a busy or failing gateway can be tried again without repeating text.
+  const delays = config.chatRetryDelaysMs || [];
+  let res;
+  let tries = 0;
+  for (;;) {
+    tries++;
+    let netError = null;
+    try {
+      res = await fetch(`${config.baseUrl}/chat/completions`, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal: sig });
+    } catch (e) {
+      if (sig.aborted) throw timeoutError(e, signal);
+      netError = e;
+    }
+    if (!netError && !isTransient(res.status)) break;
+    if (tries > delays.length) {
+      if (netError) throw new GmiError(`Could not reach GMI (${netError.cause?.code || netError.message}).${tries > 1 ? ` Tried ${tries} times.` : ''}`);
+      break;
+    }
+    if (res) await res.body?.cancel().catch(() => {});
+    await sleep(delays[tries - 1], sig).catch((e) => {
+      throw timeoutError(e, signal);
+    });
+  }
   if (res.status === 400 && body.stream_options) {
     const err = await errorFrom(res);
     if (!/stream_options/i.test(err.message)) throw err;
@@ -81,7 +132,7 @@ export async function chat({ model, messages, signal, onDelta, onThinking, maxTo
     delete body.stream_options;
     res = await fetch(`${config.baseUrl}/chat/completions`, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal: sig });
   }
-  if (!res.ok) throw await errorFrom(res);
+  if (!res.ok) throw await errorFrom(res, tries);
 
   let text = '';
   let usage = null;

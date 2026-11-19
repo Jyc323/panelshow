@@ -117,7 +117,23 @@ PanelShow 不会对共享文件夹做任何写入。以下内容不会提供给�
 
 - 消息中的链接由服务器端打开。网页提取正文；支持图像的成员额外获得最多 3 张图片；PDF 和 Word 文档转换为文本；视频直链抽取 12 帧拼成一张图（需要 ffmpeg）；YouTube 链接读取标题、简介和字幕。
 - 发送消息时可附带文本、PDF、Word 文件或图片。
-- 成员可以将报告、代码和数据写入共享文件区，也可以通过 `@@read 文件名` 或 `@@open 链接` 主动获取更多资料。
+- 成员可以将报告、代码和数据写入共享文件区，也可以通过 `@@read 文件名`、`@@open 链接`，以及开启联网搜索后的 `@@web 搜索词` 主动获取更多资料。
+
+### 联网搜索（可选，默认关闭）
+
+成员可以写一行 `@@web autonomous driving VLM robustness benchmark` 来搜索网页，得到前 5 条结果（标题、网址、摘要），再用 `@@open` 打开需要的页面；成员被要求为每一条来自网页的事实注明网址。是否搜索由成员自己决定，每轮最多 2 次。
+
+在 `.env` 中开启：
+
+| 服务 | 配置 | Key |
+|---|---|---|
+| [Firecrawl](https://www.firecrawl.dev/) | `PANELSHOW_SEARCH=on` | 无需 key，按 IP 地址有免费额度；填写 key（`PANELSHOW_SEARCH_KEY`）可提高额度 |
+| [Tavily](https://www.tavily.com/) | `PANELSHOW_SEARCH=tavily` | 免费 key，无需信用卡 |
+| [Exa](https://exa.ai/) | `PANELSHOW_SEARCH=exa` | 免费 key，无需信用卡 |
+| [Ollama web search](https://docs.ollama.com/capabilities/web-search) | `PANELSHOW_SEARCH=ollama` | 免费 Ollama 账号的 key |
+| [SearXNG](https://docs.searxng.org/)（自行部署） | `PANELSHOW_SEARCH=searxng` 和 `PANELSHOW_SEARCH_URL=http://…` | 无需 key；需在其 `settings.yml` 中启用 JSON 格式 |
+
+搜索词会发送给所选的搜索服务。侧边栏会显示当前使用的服务。
 
 ### 图片：在对话中点评、生成和修改
 
@@ -182,10 +198,14 @@ PanelShow 由一个监听 `127.0.0.1` 的 Node 服务和一个网页组成，不
 | `PANELSHOW_IMAGES_PER_RUN` | `8` | 每次发送消息最多生成的图片数 |
 | `PANELSHOW_IMAGES_PER_TURN` | `4` | 每条回答最多生成的图片数 |
 | `PANELSHOW_IMAGE_TIMEOUT_MS` | `300000` | 单张图片的等待时间上限 |
+| `PANELSHOW_SEARCH` | 关闭 | 成员联网搜索：`on`（Firecrawl，无需 key）、`firecrawl`、`tavily`、`exa`、`ollama` 或 `searxng` |
+| `PANELSHOW_SEARCH_KEY` | | 搜索服务的 key（也可使用其常用变量名，如 `TAVILY_API_KEY`） |
+| `PANELSHOW_SEARCH_URL` | | 自行部署的 SearXNG 地址 |
+| `PANELSHOW_SEARCHES_PER_TURN` | `2` | 每条回答最多的联网搜索次数 |
 
 ## 费用
 
-每条回答对应一次计费请求。发送消息前，输入框旁会显示本次将触发的请求数。GIF 中的对话共产生 13 次请求（8 条回答和 5 位评审），智能邀请的规划额外消耗 1 次。智能邀请首次使用某个模型时，还会发起两次极小的测试请求，测试结果会被缓存，之后不再重复。通过 Ollama 运行的本地模型不按请求计费，智能邀请通过查询 Ollama 的模型信息来检查它们，不发送测试请求。图片由 GMI Cloud 按张计费，价格取决于模型（撰写时约为每张 0.01 至 0.20 美元），成员可在模型列表中看到价格。
+每条回答对应一次计费请求。发送消息前，输入框旁会显示本次将触发的请求数。GIF 中的对话共产生 13 次请求（8 条回答和 5 位评审），智能邀请的规划额外消耗 1 次。智能邀请首次使用某个模型时，还会发起两次极小的测试请求，测试结果会被缓存，之后不再重复。通过 Ollama 运行的本地模型不按请求计费，智能邀请通过查询 Ollama 的模型信息来检查它们，不发送测试请求。图片由 GMI Cloud 按张计费，价格取决于模型（撰写时约为每张 0.01 至 0.20 美元），成员可在模型列表中看到价格。联网搜索默认关闭，上文列出的搜索服务均有免费额度。
 
 ## 安全与隐私
 
@@ -194,7 +214,8 @@ PanelShow 由一个监听 `127.0.0.1` 的 Node 服务和一个网页组成，不
 - 成员只能访问公开的 `http(s)` 地址，本机和内网地址默认禁止访问。
 - 共享文件夹为只读。只有扫描清单中的文件可以读取；读取时不跟随符号链接，并校验打开的文件与扫描时一致；文件夹被移动或替换后停止共享。存在硬链接的文件、名称像密钥的文件和目录均会跳过，依赖、二进制文件以及被忽略规则排除的内容也不会共享。疑似凭据的值会被脱敏，上传的文件同样适用。请注意，成员读取的内容仍会发送给模型服务商，请只共享可以对外发送的代码。
 - 网页和文件中的文字会作为参考资料提供给成员，并明确标注其不是指令。这可以降低网页内容操纵模型的风险，但无法完全消除。
-- 本地模型的请求只发送到 `.env` 中配置的 Ollama 地址，浏览器无法修改该地址。如果所有成员都是本地模型，成员读取的内容只会发送到这个 Ollama 服务。
+- 本地模型的请求只发送到 `.env` 中配置的 Ollama 地址，浏览器无法修改该地址。如果所有成员都是本地模型，成员读取的内容只会发送到这个 Ollama 服务；开启联网搜索时例外，搜索词会发送给搜索服务。
+- 联网搜索只发送搜索词，且只发送给 `.env` 中配置的服务。搜索结果作为参考资料提供给成员，成员打开网页时同样受 `@@open` 的公开地址检查约束。
 - 修改图片时，PanelShow 会通过 GMI Cloud 的上传接口上传原图，上传后的图片有一个公开链接，供图像模型读取。需要保密的图片请不要用于修改。图片保存在 `data/` 下对应房间的文件夹中。
 - 成员生成的文件以纯文本形式展示，不会作为网页执行。
 
@@ -210,18 +231,18 @@ PanelShow 由一个监听 `127.0.0.1` 的 Node 服务和一个网页组成，不
 - [ ] 将对话分享为只读页面，将评审卡片导出为图片
 - [ ] 成员以 diff 形式对共享文件夹提出修改，由用户决定是否应用
 - [ ] 在沙箱中预览成员生成的 HTML；成员可修改彼此的文件并保留版本历史
-- [ ] 成员联网搜索；视频语音转文字
+- [ ] 视频语音转文字
 
 完整路线图见 [TODO.md](TODO.md)。欢迎提交 issue 和 PR。
 
 ## 开发
 
 ```bash
-npm test     # 46 个端到端测试，基于模拟的 GMI（对话与图像）和 Ollama 服务运行，无需 API key，也无需联网
+npm test     # 54 个端到端测试，基于模拟的 GMI（对话与图像）、Ollama 和联网搜索服务运行，无需 API key，也无需联网
 npm run demo # 使用模拟模型运行完整应用
 ```
 
-`server/` 为 Node 服务端：`llm.js` 将每次模型调用分发给 GMI Cloud（`gmi.js`）或 Ollama（`ollama.js`），`orchestrator.js` 负责发言调度，`casting.js` 负责智能邀请，`judge.js` 负责匿名评审，`workspace.js` 负责只读项目文件夹，`images.js` 读取 GMI 图像模型列表并执行生成任务，`roomImages.js` 负责保存各房间的图片。`web/` 为前端页面，基于 Preact + htm，无需构建。
+`server/` 为 Node 服务端：`llm.js` 将每次模型调用分发给 GMI Cloud（`gmi.js`）或 Ollama（`ollama.js`），`orchestrator.js` 负责发言调度，`casting.js` 负责智能邀请，`judge.js` 负责匿名评审，`workspace.js` 负责只读项目文件夹，`images.js` 读取 GMI 图像模型列表并执行生成任务，`roomImages.js` 负责保存各房间的图片，`search.js` 负责联网搜索。`web/` 为前端页面，基于 Preact + htm，无需构建。
 
 ## 致谢
 
