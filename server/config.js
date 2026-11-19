@@ -34,6 +34,7 @@ export const config = {
   allowPrivateUrls: opt('ALLOW_PRIVATE_URLS') === '1',
   maxTokens: Number(opt('MAX_TOKENS') || 8000),
   requestTimeoutMs: Number(opt('TIMEOUT_MS') || 300000),
+  chatRetryDelaysMs: [3000, 8000], // waits before the 2nd and 3rd try when GMI answers 429 / 5xx before any text
   autoProbe: opt('AUTO_PROBE') !== '0', // two tiny requests when a model is first invited: does it answer, can it see images
 
   // Local models through Ollama. "off" switches them off; otherwise the server is looked for at this address.

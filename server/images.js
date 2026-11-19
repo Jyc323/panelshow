@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { config } from './config.js';
-import { GmiError } from './gmi.js';
+import { GmiError, isTransient, readableBody } from './gmi.js';
 import { normalizeImage, hasFfmpeg } from './media.js';
 
 const queue = () => config.queueUrl.replace(/\/+$/, '');
@@ -38,7 +38,7 @@ async function call(method, url, { body, signal, ms = 30000 } = {}) {
     /* not JSON */
   }
   if (!res.ok) {
-    const detail = j ? j.error?.message || j.message || j.error || j.detail || text : text;
+    const detail = j ? j.error?.message || j.message || j.error || j.detail || text : readableBody(text);
     throw new GmiError(`GMI ${res.status}: ${String(typeof detail === 'string' ? detail : JSON.stringify(detail)).slice(0, 800)}`, res.status);
   }
   if (!j) throw new GmiError(`GMI sent something that is not JSON: ${text.slice(0, 200)}`);
@@ -269,7 +269,7 @@ export async function generateImage({ model, prompt, refs = [], aspect = '', sig
       sub = await call('POST', `${queue()}/requests`, { body: { model, payload }, signal, ms: config.imageTimeoutMs });
       break;
     } catch (e) {
-      const retryable = e instanceof GmiError && (e.status === 429 || (e.status >= 500 && e.status <= 504));
+      const retryable = e instanceof GmiError && isTransient(e.status);
       if (!retryable || attempt >= 2 || signal?.aborted) throw attempt ? new GmiError(`${e.message} (after ${attempt + 1} tries)`, e.status) : e;
       onStatus(`GMI is busy (HTTP ${e.status}), trying again`);
       await sleep(attempt ? 10000 : 4000, signal);

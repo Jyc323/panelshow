@@ -66,6 +66,7 @@ test.before(async () => {
   config.baseUrl = fake.url;
   config.queueUrl = queue.url; // image models: never the real GMI queue in tests
   config.imagePollMs = 10;
+  config.chatRetryDelaysMs = [5, 5]; // real waits are seconds
   config.ollamaUrl = ''; // local models are off except in the tests that switch them on
   config.apiKey = KEY;
   config.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mrt-test-'));
@@ -163,6 +164,41 @@ test('parallel: members answer without seeing each other', async () => {
   const b = requestsFor('demo/skeptic', mark)[0];
   assert.ok(!flat(a).includes('[Skep]:') && !flat(b).includes('[Opti]:'));
   assert.match(flat(a), /cannot see their replies yet/);
+});
+
+const CF_PAGE = '<!DOCTYPE html>\n<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->\n<html class="no-js" lang="en-US">\n<head>\n<title>gmi-ie.com | 520: Web server is returning an unknown error</title>\n<link rel="stylesheet" href="/cdn-cgi/styles/main.css" />\n</head>\n<body><div id="cf-wrapper"><h1>Web server is returning an unknown error</h1></div></body></html>';
+
+test('a gateway error page is retried, then reported by its title instead of raw HTML', async () => {
+  const mark = fake.requests.length;
+  const { id } = await newRoom(['Opti', 'demo/optimist']);
+  fake.queue('demo/optimist', { status: 520, html: CF_PAGE }, { status: 520, html: CF_PAGE }, { status: 520, html: CF_PAGE });
+  const room = await say(id, 'Anyone there?');
+  const msg = room.messages.find((m) => m.role === 'member');
+  assert.equal(msg.status, 'error');
+  assert.equal(requestsFor('demo/optimist', mark).length, 3);
+  assert.match(msg.error, /^GMI 520: gmi-ie\.com \| 520: Web server is returning an unknown error \(an error page from GMI's gateway/);
+  assert.match(msg.error, /Tried 3 times/);
+  assert.ok(!/<|DOCTYPE|cf-wrapper/.test(msg.error), msg.error);
+});
+
+test('a temporary GMI error before any text is tried again and the reply goes through', async () => {
+  const mark = fake.requests.length;
+  const { id } = await newRoom(['Opti', 'demo/optimist']);
+  fake.queue('demo/optimist', { status: 503, error: { message: 'Max retries exhausted' } }, 'Second try worked.');
+  const room = await say(id, 'Anyone there?');
+  const msg = room.messages.find((m) => m.role === 'member');
+  assert.equal(msg.status, 'done', msg.error);
+  assert.equal(msg.text, 'Second try worked.');
+  assert.equal(requestsFor('demo/optimist', mark).length, 2);
+});
+
+test('a client error (400) is not tried again', async () => {
+  const mark = fake.requests.length;
+  const { id } = await newRoom(['Opti', 'demo/optimist']);
+  fake.queue('demo/optimist', { status: 400, error: { message: 'Invalid model name' } });
+  const room = await say(id, 'Anyone there?');
+  assert.equal(room.messages.find((m) => m.role === 'member').status, 'error');
+  assert.equal(requestsFor('demo/optimist', mark).length, 1);
 });
 
 test('relay: a reply that mentions @Name hands the floor over', async () => {

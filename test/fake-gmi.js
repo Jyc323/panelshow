@@ -86,6 +86,11 @@ export async function createFakeGmi({ delayMs = 0 } = {}) {
       contentType = 'application/json';
       reply = reply.mislabeled;
     }
+    if (reply && typeof reply === 'object' && 'html' in reply) {
+      // a gateway error page (Cloudflare 520 and similar), as seen from the real service
+      res.writeHead(reply.status || 520, { 'Content-Type': 'text/html' });
+      return res.end(reply.html);
+    }
     if (typeof reply === 'object') {
       res.writeHead(reply.status || 500, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ error: reply.error }));
