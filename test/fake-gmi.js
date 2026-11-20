@@ -86,6 +86,21 @@ export async function createFakeGmi({ delayMs = 0 } = {}) {
       contentType = 'application/json';
       reply = reply.mislabeled;
     }
+    if (reply && typeof reply === 'object' && ('cut' in reply || 'think' in reply || 'silent' in reply)) {
+      // { cut: 'text' } stops at the output limit; { think: ms, every: ms, text } streams only thinking first;
+      // { silent: ms, text } sends nothing at all for a while.
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      if (reply.silent) await wait(reply.silent);
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      for (let t = 0; t < (reply.think || 0); t += reply.every || 50) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'hmm ' } }] })}\n\n`);
+        await wait(reply.every || 50);
+      }
+      const out = 'cut' in reply ? reply.cut : reply.text || '';
+      if (out) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: out } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'cut' in reply ? 'length' : 'stop' }] })}\n\n`);
+      return res.end('data: [DONE]\n\n');
+    }
     if (reply && typeof reply === 'object' && 'html' in reply) {
       // a gateway error page (Cloudflare 520 and similar), as seen from the real service
       res.writeHead(reply.status || 520, { 'Content-Type': 'text/html' });

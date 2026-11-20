@@ -50,6 +50,14 @@ async function attachLinks(room, msg, signal) {
   emit(room, { type: 'message', message: msg });
 }
 
+/** The unfinished <<<FILE block at the end of a cut-off reply, if any, so the rest can be joined to it. */
+function openFileBlock(text) {
+  const start = text.lastIndexOf('<<<FILE ');
+  if (start < 0 || text.indexOf('<<<END FILE>>>', start) >= 0) return '';
+  if (start > 0 && text[start - 1] !== '\n') return '';
+  return text.slice(start);
+}
+
 /** One member speaks once. May include a few read/open steps before the reply is complete. */
 export async function memberTurn(room, member, ctl, { visible, note = '', round = 0 }) {
   const msg = { id: newId(), role: 'member', memberId: member.id, name: member.name, model: member.model, text: '', status: 'streaming', at: Date.now(), round, files: [], refs: [], tools: [], notes: [], usage: { prompt: 0, completion: 0 } };
@@ -58,29 +66,46 @@ export async function memberTurn(room, member, ctl, { visible, note = '', round 
   const started = Date.now();
   let vision = memberVision(member);
   let extra = [];
+  let cutOff = false; // the last call stopped at the output limit
+  let maxTokens = 0; // 0 = the configured limit; raised once when a model spends it all on thinking
   const call = async (messages) => {
-    const r = await chat({
-      model: member.model,
-      messages,
-      signal: ctl.signal,
-      onDelta: (d) => {
-        msg.text += d;
-        msg.thinking = false;
-        emit(room, { type: 'delta', id: msg.id, text: d });
-      },
-      onThinking: () => {
-        if (!msg.thinking) {
-          msg.thinking = true;
-          emit(room, { type: 'message', message: msg });
-        }
-      },
-    });
+    const ask = () =>
+      chat({
+        model: member.model,
+        messages,
+        signal: ctl.signal,
+        maxTokens: maxTokens || undefined,
+        onDelta: (d) => {
+          msg.text += d;
+          msg.thinking = false;
+          emit(room, { type: 'delta', id: msg.id, text: d });
+        },
+        onThinking: () => {
+          if (!msg.thinking) {
+            msg.thinking = true;
+            emit(room, { type: 'message', message: msg });
+          }
+        },
+      });
+    const start = msg.text.length;
+    let r;
+    try {
+      r = await ask();
+    } catch (e) {
+      // A raised limit the model does not accept: try once more with a smaller raise.
+      const tooBig = maxTokens > config.maxTokens * 2 && e instanceof GmiError && e.status === 400 && /token|max/i.test(e.message) && msg.text.length === start;
+      if (!tooBig) throw e;
+      maxTokens = config.maxTokens * 2;
+      r = await ask();
+    }
     msg.usage.prompt += r.usage?.prompt_tokens || 0;
     msg.usage.completion += r.usage?.completion_tokens || 0;
-    if (r.finishReason === 'length') msg.notes.push('The reply hit the output limit and may be cut off.');
+    cutOff = r.finishReason === 'length';
   };
   let finalStep = false;
   let nudged = false;
+  let continued = 0;
+  let carry = ''; // the start of a file block that was cut off, joined with its continuation
   try {
     for (let step = 0; ; step++) {
       const before = msg.text.length;
@@ -102,7 +127,16 @@ export async function memberTurn(room, member, ctl, { visible, note = '', round 
       const cleaned = msg.text.slice(before).replace(/\]<\]minimax\[>\[/g, '').replace(/<\/?tool_call>/g, '').replace(/<(mm:think|think)>[\s\S]*?(?:<\/\1>|$)/g, '').replace(/^mm:think[^\n]*(?:\n(?!\n)[^\n]*)*/gm, '');
       msg.text = msg.text.slice(0, before) + cleaned;
       const segment = cleaned;
-      const parsed = parseReply(segment);
+      if (cutOff && !segment.trim() && !maxTokens) {
+        // The whole output limit went into thinking and nothing visible came back: ask once more with room to answer.
+        maxTokens = Math.max(config.maxTokens * 4, 32000);
+        msg.notes.push(`The model spent its whole output limit (${config.maxTokens} tokens) on thinking, so it was asked again with a limit of ${maxTokens}.`);
+        emit(room, { type: 'message', message: msg });
+        step--;
+        continue;
+      }
+      const parsed = parseReply(carry + segment);
+      carry = cutOff ? openFileBlock(carry + segment) : '';
       const savedNow = [];
       for (const f of parsed.files) {
         const w = writeMemberFile(room, member, f.path, f.content);
@@ -116,6 +150,13 @@ export async function memberTurn(room, member, ctl, { visible, note = '', round 
         // Read the material, then wrote nothing (seen with thinking models): ask once for the answer.
         nudged = true;
         extra = [...extra, { role: 'assistant', content: '(no reply)' }, { role: 'user', content: '[System]: You wrote nothing after reading. Give your complete answer now, based on what you have read.' }];
+        continue;
+      }
+      if (!requests.length && cutOff && segment.trim() && continued < config.continuations) {
+        // Cut off by the output limit: let the member finish, joined seamlessly to what it wrote.
+        continued++;
+        extra = [...extra, { role: 'assistant', content: segment }, { role: 'user', content: '[System]: Your reply was cut off by the output limit. Continue exactly where it stopped, from the next character. Do not repeat anything and do not add an introduction.' }];
+        step--;
         continue;
       }
       if (!requests.length) break;
@@ -148,7 +189,13 @@ export async function memberTurn(room, member, ctl, { visible, note = '', round 
       msg.text += '\n\n';
       emit(room, { type: 'message', message: msg });
     }
-    msg.status = 'done';
+    if (cutOff) msg.notes.push('The reply hit the output limit and may be cut off.');
+    if (!msg.text.trim() && !msg.files.length) {
+      msg.status = 'error';
+      msg.error = cutOff
+        ? 'The model spent its whole output limit on thinking and wrote no reply. Ask again with a narrower question, or raise PANELSHOW_MAX_TOKENS.'
+        : 'The model returned an empty reply. Ask again, or try another model.';
+    } else msg.status = 'done';
   } catch (e) {
     if (ctl.signal.aborted) msg.status = 'stopped';
     else {
