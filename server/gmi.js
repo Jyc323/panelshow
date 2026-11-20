@@ -65,15 +65,39 @@ async function errorFrom(res, tries = 1) {
 }
 
 /** A timeout is reported as such (not as "Unexpected error"); a stop by the Host stays an abort. */
-function timeoutError(e, signal) {
+function timeoutError(e, signal, idle) {
   if (signal?.aborted) return e;
-  if (e && (e.name === 'TimeoutError' || /timeout/i.test(e.message || ''))) return new GmiError(`GMI did not finish within ${Math.round(config.requestTimeoutMs / 1000)} s. Thinking models can be slow on long inputs; raise PANELSHOW_TIMEOUT_MS or ask for a shorter answer.`);
+  if (e && (e.name === 'TimeoutError' || /timeout/i.test(e.message || ''))) {
+    if (idle && !idle.fired) return new GmiError(`The reply took longer than ${Math.round(config.requestMaxMs / 60000)} min and was stopped. Ask for a shorter answer, or raise PANELSHOW_MAX_REPLY_MS.`);
+    return new GmiError(`GMI sent nothing for ${Math.round(config.requestTimeoutMs / 1000)} s. Thinking models can think silently for a long time on long inputs; raise PANELSHOW_TIMEOUT_MS or ask for a shorter answer.`);
+  }
   return e;
 }
 
 function withTimeout(signal) {
   const t = AbortSignal.timeout(config.requestTimeoutMs);
   return signal ? AbortSignal.any([signal, t]) : t;
+}
+
+/**
+ * A timeout that counts only silence: every chunk from GMI (text, thinking or keep-alive) starts it again,
+ * so a long answer that keeps streaming is not cut off. A hard limit still applies.
+ */
+function idleTimeout(signal) {
+  const ctl = new AbortController();
+  const state = { fired: false, timer: null };
+  state.arm = () => {
+    clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+      state.fired = true;
+      ctl.abort(new DOMException('No data from GMI', 'TimeoutError'));
+    }, config.requestTimeoutMs);
+    state.timer.unref?.();
+  };
+  state.stop = () => clearTimeout(state.timer);
+  state.arm();
+  state.signal = AbortSignal.any([ctl.signal, AbortSignal.timeout(config.requestMaxMs), ...(signal ? [signal] : [])]);
+  return state;
 }
 
 let modelCache = null;
@@ -100,7 +124,8 @@ let streamUsageSupported = true;
 export async function chat({ model, messages, signal, onDelta, onThinking, maxTokens }) {
   const body = { model, messages, stream: true, max_tokens: maxTokens || config.maxTokens };
   if (streamUsageSupported) body.stream_options = { include_usage: true };
-  const sig = withTimeout(signal);
+  const idle = idleTimeout(signal);
+  const sig = idle.signal;
   // Nothing has been streamed yet, so a busy or failing gateway can be tried again without repeating text.
   const delays = config.chatRetryDelaysMs || [];
   let res;
@@ -111,7 +136,7 @@ export async function chat({ model, messages, signal, onDelta, onThinking, maxTo
     try {
       res = await fetch(`${config.baseUrl}/chat/completions`, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal: sig });
     } catch (e) {
-      if (sig.aborted) throw timeoutError(e, signal);
+      if (sig.aborted) throw timeoutError(e, signal, idle);
       netError = e;
     }
     if (!netError && !isTransient(res.status)) break;
@@ -121,8 +146,9 @@ export async function chat({ model, messages, signal, onDelta, onThinking, maxTo
     }
     if (res) await res.body?.cancel().catch(() => {});
     await sleep(delays[tries - 1], sig).catch((e) => {
-      throw timeoutError(e, signal);
+      throw timeoutError(e, signal, idle);
     });
+    idle.arm(); // waiting between tries is not silence from GMI
   }
   if (res.status === 400 && body.stream_options) {
     const err = await errorFrom(res);
@@ -175,6 +201,7 @@ export async function chat({ model, messages, signal, onDelta, onThinking, maxTo
   };
   try {
     for await (const chunk of res.body) {
+      idle.arm();
       buf += decoder.decode(chunk, { stream: true });
       if (sse === null) {
         const head = buf.trimStart();
@@ -185,7 +212,9 @@ export async function chat({ model, messages, signal, onDelta, onThinking, maxTo
     }
     buf += decoder.decode();
   } catch (e) {
-    throw timeoutError(e, signal);
+    throw timeoutError(e, signal, idle);
+  } finally {
+    idle.stop();
   }
   if (sse) {
     buf += '\n';

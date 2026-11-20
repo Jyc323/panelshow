@@ -1122,3 +1122,89 @@ test('web search errors: rate limit and gateway pages are reported readably', as
     assert.deepEqual([c.ok, c.results.length], [true, 0]);
   });
 });
+
+// ---- Long replies: output limit and silence ----
+
+test('a reply cut off by the output limit is continued and joined seamlessly', async () => {
+  const mark = fake.requests.length;
+  const { id } = await newRoom(['Opti', 'demo/optimist']);
+  fake.queue('demo/optimist', { cut: 'Plan for every line: line A, ' }, 'line B. Done.');
+  const room = await say(id, 'Write the full plan.');
+  const msg = room.messages.find((m) => m.role === 'member');
+  assert.equal(msg.status, 'done');
+  assert.equal(msg.text, 'Plan for every line: line A, line B. Done.');
+  assert.ok(!msg.notes.some((n) => /output limit/.test(n)), msg.notes.join(' | '));
+  const second = requestsFor('demo/optimist', mark)[1];
+  assert.match(flat(second), /cut off by the output limit\. Continue exactly where it stopped/);
+  assert.ok(second.body.messages.some((m) => m.role === 'assistant' && m.content === 'Plan for every line: line A, '));
+});
+
+test('a file block cut off by the output limit is saved once its continuation ends it', async () => {
+  const { id } = await newRoom(['Writer', 'demo/optimist']);
+  fake.queue('demo/optimist', { cut: 'Here it is.\n<<<FILE shots.md>>>\n# Shots\nline 1\n' }, 'line 2\n<<<END FILE>>>\nSaved.');
+  const room = await say(id, 'Write the shot list as a file.');
+  const file = room.files.find((f) => f.path === 'shots.md');
+  assert.ok(file, JSON.stringify(room.files));
+  const text = (await call('GET', `/api/rooms/${id}/file?path=shots.md`)).text;
+  assert.equal(text, '# Shots\nline 1\nline 2');
+});
+
+test('continuations stop after two; the cut-off note stays', async () => {
+  const mark = fake.requests.length;
+  const { id } = await newRoom(['Opti', 'demo/optimist']);
+  fake.queue('demo/optimist', { cut: 'a' }, { cut: 'b' }, { cut: 'c' });
+  const room = await say(id, 'Go.');
+  const msg = room.messages.find((m) => m.role === 'member');
+  assert.equal(requestsFor('demo/optimist', mark).length, 3);
+  assert.equal(msg.text, 'abc');
+  assert.ok(msg.notes.some((n) => /hit the output limit/.test(n)));
+});
+
+test('a model that spends the whole limit on thinking is asked again with a larger limit', async () => {
+  const mark = fake.requests.length;
+  const { id } = await newRoom(['Opti', 'demo/optimist']);
+  fake.queue('demo/optimist', { cut: '' }, 'The answer.');
+  const room = await say(id, 'Think hard.');
+  const msg = room.messages.find((m) => m.role === 'member');
+  assert.equal(msg.status, 'done');
+  assert.equal(msg.text, 'The answer.');
+  const reqs = requestsFor('demo/optimist', mark);
+  assert.deepEqual(reqs.map((r) => r.body.max_tokens), [config.maxTokens, Math.max(config.maxTokens * 4, 32000)]);
+  assert.ok(msg.notes.some((n) => /spent its whole output limit/.test(n)));
+});
+
+test('a raised limit the model refuses falls back to a smaller one; no reply at all is an error', async () => {
+  const mark = fake.requests.length;
+  const { id } = await newRoom(['Opti', 'demo/optimist']);
+  fake.queue('demo/optimist', { cut: '' }, { status: 400, error: { message: 'max_tokens is too large for this model' } }, 'Fine.');
+  const room = await say(id, 'Think.');
+  assert.equal(room.messages.find((m) => m.role === 'member').text, 'Fine.');
+  assert.deepEqual(requestsFor('demo/optimist', mark).map((r) => r.body.max_tokens), [config.maxTokens, Math.max(config.maxTokens * 4, 32000), config.maxTokens * 2]);
+
+  fake.queue('demo/optimist', { cut: '' }, { cut: '' });
+  const again = await say(id, 'Think again.');
+  const last = again.messages.filter((m) => m.role === 'member').at(-1);
+  assert.equal(last.status, 'error');
+  assert.match(last.error, /spent its whole output limit on thinking and wrote no reply/);
+
+  fake.queue('demo/optimist', '');
+  const empty = (await say(id, 'Say something.')).messages.filter((m) => m.role === 'member').at(-1);
+  assert.deepEqual([empty.status, empty.error], ['error', 'The model returned an empty reply. Ask again, or try another model.']);
+});
+
+test('the timeout counts silence only: long thinking that keeps streaming is not cut off', async () => {
+  const saved = config.requestTimeoutMs;
+  config.requestTimeoutMs = 150;
+  try {
+    const { id } = await newRoom(['Opti', 'demo/optimist']);
+    fake.queue('demo/optimist', { think: 450, every: 40, text: 'Thought for a while, then answered.' });
+    const a = (await say(id, 'Take your time.')).messages.filter((m) => m.role === 'member').at(-1);
+    assert.deepEqual([a.status, a.text], ['done', 'Thought for a while, then answered.']);
+    fake.queue('demo/optimist', { silent: 450, text: 'too late' });
+    const b = (await say(id, 'Again.')).messages.filter((m) => m.role === 'member').at(-1);
+    assert.equal(b.status, 'error');
+    assert.match(b.error, /^GMI sent nothing for 0 s\./);
+  } finally {
+    config.requestTimeoutMs = saved;
+  }
+});

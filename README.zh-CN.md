@@ -186,8 +186,9 @@ PanelShow 由一个监听 `127.0.0.1` 的 Node 服务和一个网页组成，不
 | `GMI_API_KEY` | | GMI Cloud API key |
 | `PORT` | `8790` | 本地监听端口 |
 | `PANELSHOW_DIRECTOR_MODEL` | 当前 key 可用的最新 GPT / Gemini Pro / Qwen Max / DeepSeek | 智能邀请使用的规划模型 |
-| `PANELSHOW_MAX_TOKENS` | `8000` | 单条回答的最大输出 token 数 |
-| `PANELSHOW_TIMEOUT_MS` | `300000` | 单次请求超时时间；思考型模型响应可能较慢 |
+| `PANELSHOW_MAX_TOKENS` | `8000` | 单次请求的最大输出 token 数。回答因此被截断时，会自动续写最多 2 次；模型把额度全部用于思考时，会以更高的上限再请求一次 |
+| `PANELSHOW_TIMEOUT_MS` | `300000` | 回答连续多久没有任何输出就停止；思考型模型可能长时间没有输出 |
+| `PANELSHOW_MAX_REPLY_MS` | `1800000` | 单条回答持续输出的最长时间 |
 | `PANELSHOW_AUTO_PROBE` | `1` | 设为 `0` 时，跳过对新邀请模型的两项轻量测试 |
 | `PANELSHOW_ALLOW_PRIVATE_URLS` | `0` | 设为 `1` 时，允许成员访问 localhost 和局域网地址 |
 | `PANELSHOW_DATA_DIR` | `./data` | 房间数据的存储目录 |
@@ -238,7 +239,7 @@ PanelShow 由一个监听 `127.0.0.1` 的 Node 服务和一个网页组成，不
 ## 开发
 
 ```bash
-npm test     # 54 个端到端测试，基于模拟的 GMI（对话与图像）、Ollama 和联网搜索服务运行，无需 API key，也无需联网
+npm test     # 60 个端到端测试，基于模拟的 GMI（对话与图像）、Ollama 和联网搜索服务运行，无需 API key，也无需联网
 npm run demo # 使用模拟模型运行完整应用
 ```
 

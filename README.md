@@ -186,8 +186,9 @@ Only the API key is required. Everything else is optional and goes in `.env` (se
 | `GMI_API_KEY` | | GMI Cloud API key |
 | `PORT` | `8790` | Local port |
 | `PANELSHOW_DIRECTOR_MODEL` | newest GPT / Gemini Pro / Qwen Max / DeepSeek available to your key | Planner model for Smart invite |
-| `PANELSHOW_MAX_TOKENS` | `8000` | Maximum output tokens per reply |
-| `PANELSHOW_TIMEOUT_MS` | `300000` | Timeout per request; thinking models can be slow |
+| `PANELSHOW_MAX_TOKENS` | `8000` | Output limit per request. A reply cut off by it is continued up to 2 times; a model that spends it all on thinking is asked once more with a higher limit |
+| `PANELSHOW_TIMEOUT_MS` | `300000` | How long a reply may send nothing before it is stopped; thinking models can be silent for a long time |
+| `PANELSHOW_MAX_REPLY_MS` | `1800000` | Longest time one reply may keep streaming |
 | `PANELSHOW_AUTO_PROBE` | `1` | `0` skips the two small checks for newly invited models |
 | `PANELSHOW_ALLOW_PRIVATE_URLS` | `0` | `1` lets members open localhost and LAN addresses |
 | `PANELSHOW_DATA_DIR` | `./data` | Directory where room data is stored |
@@ -238,7 +239,7 @@ Full roadmap: [TODO.md](TODO.md). Issues and pull requests are welcome.
 ## Development
 
 ```bash
-npm test     # 54 end-to-end tests against stand-in GMI (chat and image), Ollama and web search servers: no API key, no network
+npm test     # 60 end-to-end tests against stand-in GMI (chat and image), Ollama and web search servers: no API key, no network
 npm run demo # run the full app with stand-in models
 ```
 

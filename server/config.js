@@ -33,8 +33,10 @@ export const config = {
   directorModel: opt('DIRECTOR_MODEL') || '', // the model that plans Smart invite; empty = pick a well-known one
   allowPrivateUrls: opt('ALLOW_PRIVATE_URLS') === '1',
   maxTokens: Number(opt('MAX_TOKENS') || 8000),
-  requestTimeoutMs: Number(opt('TIMEOUT_MS') || 300000),
-  chatRetryDelaysMs: [3000, 8000], // waits before the 2nd and 3rd try when GMI answers 429 / 5xx before any text
+  requestTimeoutMs: Number(opt('TIMEOUT_MS') || 300000), // a reply may go this long without sending anything (thinking models can be silent)
+  requestMaxMs: Number(opt('MAX_REPLY_MS') || 30 * 60 * 1000), // a reply that keeps streaming is still stopped after this
+  chatRetryDelaysMs: [3000, 8000, 20000], // waits before each new try when GMI answers 429 / 5xx before any text
+  continuations: 2, // a reply cut off by the output limit is continued this many times
   autoProbe: opt('AUTO_PROBE') !== '0', // two tiny requests when a model is first invited: does it answer, can it see images
 
   // Local models through Ollama. "off" switches them off; otherwise the server is looked for at this address.
